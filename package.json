@@ -6,14 +6,20 @@
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"test": "vitest",
-		"cf-typegen": "wrangler types"
+		"test": "vitest --pool=@cloudflare/vitest-pool-workers",
+		"cf-typegen": "wrangler types",
+		"build": "wrangler build",
+		"db:create": "wrangler d1 create reading_stats",
+		"db:migrate": "wrangler d1 execute reading_stats --file=./schema.sql",
+		"db:studio": "wrangler d1 studio reading_stats"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.6.4",
 		"@cloudflare/workers-types": "^4.20250214.0",
+		"@cloudflare/workers-vitest-environment": "^0.1.1",
 		"typescript": "^5.5.2",
 		"vitest": "~2.1.9",
 		"wrangler": "^3.109.1"
-	}
+	},
+	"dependencies": {}
 }

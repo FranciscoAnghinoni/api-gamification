@@ -1,0 +1,16 @@
+name = "api-gamification"
+main = "src/worker.ts"
+compatibility_date = "2024-02-18"
+
+[vars]
+ENVIRONMENT = "production"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "reading_stats"
+database_id = "your-database-id-from-wrangler-d1-create"
+
+# Optional: Add KV namespace for rate limiting
+# [[kv_namespaces]]
+# binding = "RATELIMIT"
+# id = "YOUR_KV_NAMESPACE_ID" 

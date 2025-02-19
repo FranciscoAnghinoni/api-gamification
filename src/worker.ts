@@ -33,17 +33,7 @@ export default {
 		const ip = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 
 		try {
-			// Check rate limit for all endpoints except admin
-			if (!url.pathname.startsWith('/api/admin')) {
-				return new Response(JSON.stringify({ error: 'Too many requests' }), {
-					status: 429,
-					headers: {
-						...corsHeaders,
-						'Content-Type': 'application/json',
-					},
-				});
-			}
-
+		
 			let responseData;
 			let status = 200;
 

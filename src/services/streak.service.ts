@@ -15,7 +15,7 @@ export class StreakService {
 		const lastRead = await this.db.getLastReadDate(user.id);
 		if (!lastRead) {
 			// First read ever, start streak at 1
-			await this.db.updateUserStreak(user.id, 1);
+			await this.db.updateUserStreak(user.id, Math.max(1, user.highest_streak || 0));
 			return;
 		}
 
@@ -44,6 +44,8 @@ export class StreakService {
 		}
 		// Otherwise, it's a gap in reading, start new streak at 1
 
+		// Update highest streak if the new streak is higher
+		const newHighestStreak = Math.max(newStreak, user.highest_streak || 0);
 		await this.db.updateUserStreak(user.id, newStreak);
 	}
 }

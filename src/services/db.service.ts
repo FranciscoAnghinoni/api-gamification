@@ -75,6 +75,8 @@ export class DatabaseService {
 		console.log('Record read called');
 		const user = await this.getOrCreateUser(data.email);
 		console.log('User:', user);
+
+		// First record the read
 		await this.db
 			.prepare(
 				`
@@ -86,6 +88,28 @@ export class DatabaseService {
 			)
 			.bind(user.id, data.post_id, data.utm_source || null, data.utm_medium || null, data.utm_campaign || null, data.utm_channel || null)
 			.run();
+
+		// Get the last read date before today
+		const lastReadDate = await this.getLastReadDate(user.id);
+		const today = new Date();
+		let newStreak = 1; // Default to 1 for first read
+
+		if (lastReadDate) {
+			const lastRead = new Date(lastReadDate);
+			const dayDifference = Math.floor((today.getTime() - lastRead.getTime()) / (1000 * 60 * 60 * 24));
+
+			if (dayDifference === 1) {
+				// Consecutive day, increment streak
+				newStreak = user.current_streak + 1;
+			} else if (dayDifference === 0) {
+				// Same day, maintain current streak
+				newStreak = user.current_streak;
+			}
+			// If more than 1 day has passed, streak resets to 1 (default value)
+		}
+
+		// Update the user's streak
+		await this.updateUserStreak(user.id, newStreak);
 	}
 
 	async getUserStats(userId?: number, email?: string): Promise<UserStats> {

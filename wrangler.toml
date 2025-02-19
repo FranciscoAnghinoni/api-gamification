@@ -15,8 +15,12 @@ database_id = "a7d8da90-3532-40fb-81fc-87fa7432551f"
 # binding = "RATELIMIT"
 # id = "YOUR_KV_NAMESPACE_ID" 
 
+# wrangler.toml (wrangler v3.88.0^)
 [observability.logs]
 enabled = true
+
+
+
 
 
 

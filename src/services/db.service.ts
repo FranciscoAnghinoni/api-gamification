@@ -37,7 +37,7 @@ export class DatabaseService {
 		let user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
 
 		if (!user) {
-			await this.db.prepare('INSERT INTO users (email, current_streak, highest_streak) VALUES (?, 0, 0)').bind(email).run();
+			await this.db.prepare('INSERT INTO users (email, current_streak, highest_streak) VALUES (?, 1, 1)').bind(email).run();
 			user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
 		}
 
@@ -71,12 +71,41 @@ export class DatabaseService {
 			.run();
 	}
 
-	async recordRead(data: WebhookData): Promise<void> {
-		console.log('Record read called');
-		const user = await this.getOrCreateUser(data.email);
-		console.log('User:', user);
+	async getLastUniquePostRead(userId: number): Promise<{ post_id: string; read_date: string } | null> {
+		const result = await this.db
+			.prepare(
+				`
+				SELECT post_id, read_date 
+				FROM reading_stats 
+				WHERE user_id = ? 
+				ORDER BY id DESC LIMIT 1
+			`
+			)
+			.bind(userId)
+			.first<{ post_id: string; read_date: string }>();
 
-		// First record the read
+		return result || null;
+	}
+
+	async hasReadPost(userId: number, postId: string): Promise<boolean> {
+		const result = await this.db
+			.prepare('SELECT 1 FROM reading_stats WHERE user_id = ? AND post_id = ? LIMIT 1')
+			.bind(userId, postId)
+			.first<{ 1: number }>();
+
+		return !!result;
+	}
+
+	async recordRead(data: WebhookData): Promise<void> {
+		const user = await this.getOrCreateUser(data.email);
+
+		// Check if user has already read this post
+		const hasRead = await this.hasReadPost(user.id, data.post_id);
+		if (hasRead) {
+			return;
+		}
+
+		// Record the new read
 		await this.db
 			.prepare(
 				`
@@ -89,23 +118,16 @@ export class DatabaseService {
 			.bind(user.id, data.post_id, data.utm_source || null, data.utm_medium || null, data.utm_campaign || null, data.utm_channel || null)
 			.run();
 
-		// Get the last read date before today
-		const lastReadDate = await this.getLastReadDate(user.id);
-		const today = new Date();
+		// Get the last unique post read
+		const lastRead = await this.getLastUniquePostRead(user.id);
 		let newStreak = 1; // Default to 1 for first read
 
-		if (lastReadDate) {
-			const lastRead = new Date(lastReadDate);
-			const dayDifference = Math.floor((today.getTime() - lastRead.getTime()) / (1000 * 60 * 60 * 24));
-
-			if (dayDifference === 1) {
-				// Consecutive day, increment streak
-				newStreak = user.current_streak + 1;
-			} else if (dayDifference === 0) {
-				// Same day, maintain current streak
-				newStreak = user.current_streak;
-			}
-			// If more than 1 day has passed, streak resets to 1 (default value)
+		if (lastRead && lastRead.post_id !== data.post_id) {
+			// If there was a previous read and it's not the same post
+			newStreak = user.current_streak + 1;
+		} else if (lastRead && lastRead.post_id === data.post_id) {
+			// If it's the same post (shouldn't happen due to early return, but just in case)
+			newStreak = user.current_streak;
 		}
 
 		// Update the user's streak

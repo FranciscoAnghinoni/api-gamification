@@ -18,12 +18,6 @@ export interface User {
 	current_streak: number;
 	highest_streak: number;
 	last_read_date: string | null;
-	auto_login_token?: string;
-}
-
-export interface LoginResponse {
-	success: boolean;
-	user: User;
 }
 
 export interface ReadingHistory {

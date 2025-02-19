@@ -1,5 +1,4 @@
 import { User, WebhookData, ValidationError, UserStats, AdminStats, AdminStatsFilters, PostStats, ReadingHistory } from '../types';
-import { generateAutoLoginToken } from '../utils/auth';
 
 export interface Database {
 	prepare: (query: string) => D1PreparedStatement;
@@ -34,19 +33,11 @@ export class DbService {
 export class DatabaseService {
 	constructor(private db: D1Database) {}
 
-	async getUserByAutoLoginToken(token: string): Promise<User | null> {
-		return await this.db.prepare('SELECT * FROM users WHERE auto_login_token = ?').bind(token).first<User>();
-	}
-
 	async getOrCreateUser(email: string): Promise<User> {
 		let user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
 
 		if (!user) {
-			const token = generateAutoLoginToken();
-			await this.db
-				.prepare('INSERT INTO users (email, auto_login_token, current_streak, highest_streak) VALUES (?, ?, 0, 0)')
-				.bind(email, token)
-				.run();
+			await this.db.prepare('INSERT INTO users (email, current_streak, highest_streak) VALUES (?, 0, 0)').bind(email).run();
 			user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
 		}
 

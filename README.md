@@ -38,7 +38,6 @@ A Cloudflare Workers API for gamifying newsletter reading habits with streak tra
 - Input validation
 - Error handling
 - CORS configuration
-- API key authentication
 - Data encryption
 
 ## API Endpoints

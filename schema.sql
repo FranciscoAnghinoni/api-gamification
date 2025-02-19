@@ -2,7 +2,6 @@
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
-    auto_login_token TEXT UNIQUE,
     current_streak INTEGER DEFAULT 0,
     highest_streak INTEGER DEFAULT 0,
     last_read_date TEXT,
@@ -40,7 +39,6 @@ CREATE INDEX idx_reading_stats_user_id ON reading_stats(user_id);
 CREATE INDEX idx_reading_stats_post_id ON reading_stats(post_id);
 CREATE INDEX idx_reading_stats_read_date ON reading_stats(read_date);
 CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_auto_login_token ON users(auto_login_token);
 
 -- Create views for common queries
 CREATE VIEW v_user_stats AS

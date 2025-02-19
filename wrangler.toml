@@ -14,3 +14,9 @@ database_id = "a7d8da90-3532-40fb-81fc-87fa7432551f"
 # [[kv_namespaces]]
 # binding = "RATELIMIT"
 # id = "YOUR_KV_NAMESPACE_ID" 
+
+[observability.logs]
+enabled = true
+
+
+

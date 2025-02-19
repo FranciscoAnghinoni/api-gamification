@@ -34,7 +34,7 @@ export default {
 
 		try {
 			// Check rate limit for all endpoints except admin
-			if (!url.pathname.startsWith('/api/admin') && (await rateLimiter.isRateLimited(ip))) {
+			if (!url.pathname.startsWith('/api/admin')) {
 				return new Response(JSON.stringify({ error: 'Too many requests' }), {
 					status: 429,
 					headers: {
@@ -52,11 +52,22 @@ export default {
 					const email = url.searchParams.get('email');
 					const postId = url.searchParams.get('id');
 
+					console.log('Raw values:', { email, postId });
+					console.log('Types:', {
+						emailType: typeof email,
+						postIdType: typeof postId,
+					});
+					console.log('Trimmed lengths:', {
+						emailLength: email?.trim().length,
+						postIdLength: postId?.trim().length,
+					});
+
 					if (!email?.trim() || !postId?.trim()) {
 						throw new ValidationError('Email and id are required');
 					}
 
 					try {
+						console.log('Record read called');
 						await db.recordRead({
 							email,
 							post_id: postId,

@@ -72,8 +72,9 @@ export class DatabaseService {
 	}
 
 	async recordRead(data: WebhookData): Promise<void> {
+		console.log('Record read called');
 		const user = await this.getOrCreateUser(data.email);
-
+		console.log('User:', user);
 		await this.db
 			.prepare(
 				`

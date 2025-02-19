@@ -8,7 +8,7 @@ ENVIRONMENT = "production"
 [[d1_databases]]
 binding = "DB"
 database_name = "reading_stats"
-database_id = "your-database-id-from-wrangler-d1-create"
+database_id = "a7d8da90-3532-40fb-81fc-87fa7432551f"
 
 # Optional: Add KV namespace for rate limiting
 # [[kv_namespaces]]

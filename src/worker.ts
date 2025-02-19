@@ -52,7 +52,7 @@ export default {
 					const email = url.searchParams.get('email');
 					const postId = url.searchParams.get('id');
 
-					if (!email || !postId) {
+					if (!email?.trim() || !postId?.trim()) {
 						throw new ValidationError('Email and id are required');
 					}
 

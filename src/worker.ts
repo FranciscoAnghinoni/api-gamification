@@ -1,34 +1,33 @@
-import { Env, WebhookData, ValidationError } from './types';
 import { DatabaseService } from './services/db.service';
-import { StreakService } from './services/streak.service';
 import { RateLimitService } from './services/rate-limit.service';
+import { StreakService } from './services/streak.service';
+import { Env, ValidationError } from './types';
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		const allowedOrigins = ['https://the-news-gamification-ten.vercel.app', 'http://localhost:5173', 'http://localhost:3000'];
+		const origin = request.headers.get('Origin') || '';
+
+		// CORS headers to be applied to all responses
+		const corsHeaders = {
+			'Access-Control-Allow-Origin': allowedOrigins.includes(origin) ? origin : allowedOrigins[0],
+			'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+			'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+			'Access-Control-Allow-Credentials': 'true',
+		};
+
 		// Handle CORS preflight requests
 		if (request.method === 'OPTIONS') {
 			return new Response(null, {
 				headers: {
-					'Access-Control-Allow-Origin': 'http://localhost:5173',
-					'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-					'Access-Control-Allow-Headers': 'Content-Type',
-					'Access-Control-Allow-Credentials': 'true',
+					...corsHeaders,
 					'Access-Control-Max-Age': '86400',
 				},
 			});
 		}
 
-		const ALLOWED_ORIGIN = env.ENVIRONMENT === 'production' ? 'https://your-production-domain.com' : 'http://localhost:5173';
-
-		// Add CORS headers to all responses
-		const corsHeaders = {
-			'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
-			'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-			'Access-Control-Allow-Headers': 'Content-Type',
-			'Access-Control-Allow-Credentials': 'true',
-		};
-
 		const db = new DatabaseService(env.DB);
+		const streakService = new StreakService(db);
 		const rateLimiter = new RateLimitService(env.DB);
 		const url = new URL(request.url);
 		const ip = request.headers.get('cf-connecting-ip') || '0.0.0.0';
@@ -36,8 +35,17 @@ export default {
 		try {
 			// Check rate limit for all endpoints except admin
 			if (!url.pathname.startsWith('/api/admin') && (await rateLimiter.isRateLimited(ip))) {
-				return Response.json({ error: 'Too many requests' }, { status: 429 });
+				return new Response(JSON.stringify({ error: 'Too many requests' }), {
+					status: 429,
+					headers: {
+						...corsHeaders,
+						'Content-Type': 'application/json',
+					},
+				});
 			}
+
+			let responseData;
+			let status = 200;
 
 			switch (true) {
 				case request.method === 'GET' && url.pathname === '/': {
@@ -57,55 +65,95 @@ export default {
 							utm_campaign: url.searchParams.get('utm_campaign') || undefined,
 							utm_channel: url.searchParams.get('utm_channel') || undefined,
 						});
-						return new Response('OK', { status: 200 });
+
+						// Update streak after recording read
+						await streakService.updateStreak(email);
+						responseData = { success: true };
 					} catch (error) {
 						console.error('Error recording read:', error);
-						return Response.json({ error: 'Failed to record read' }, { status: 500 });
+						throw new Error('Failed to record read');
 					}
-				}
-
-				case request.method === 'POST' && url.pathname === '/api/reading': {
-					const data = (await request.json()) as { userId: number; pagesRead: number };
-					if (!data.userId || !data.pagesRead) {
-						throw new ValidationError('userId and pagesRead are required');
-					}
-					const result = await db.recordReading(data.userId, data.pagesRead, new Date().toISOString().split('T')[0]);
-					return Response.json({ success: true, id: result.meta.last_row_id });
-				}
-
-				case request.method === 'POST' && url.pathname === '/api/users': {
-					const body = (await request.json()) as { username: string };
-					if (!body.username) {
-						throw new ValidationError('Username is required');
-					}
-					const result = await db.createUser(body.username);
-					return Response.json({ success: true, userId: result.meta.last_row_id });
+					break;
 				}
 
 				case request.method === 'GET' && url.pathname === '/api/stats': {
 					const userId = url.searchParams.get('userId');
-					if (!userId) {
-						throw new ValidationError('userId is required');
+					const email = url.searchParams.get('email');
+
+					if (!userId && !email) {
+						throw new ValidationError('Either userId or email is required');
 					}
-					const stats = await db.getUserStats(parseInt(userId, 10));
-					return Response.json(stats);
+
+					const stats = await db.getUserStats(userId ? parseInt(userId, 10) : undefined, email);
+					const history = await db.getUserReadingHistory(userId ? parseInt(userId, 10) : undefined, email);
+					responseData = { ...stats, history };
+					break;
 				}
 
 				case request.method === 'GET' && url.pathname === '/api/admin/stats': {
-					const db = new DatabaseService(env.DB);
-					const stats = await db.getAdminStats();
-					return Response.json(stats);
+					const startDate = url.searchParams.get('startDate');
+					const endDate = url.searchParams.get('endDate');
+					const postId = url.searchParams.get('postId');
+					const minStreak = url.searchParams.get('minStreak');
+
+					responseData = await db.getAdminStats({
+						startDate,
+						endDate,
+						postId,
+						minStreak: minStreak ? parseInt(minStreak, 10) : undefined,
+					});
+					break;
+				}
+
+				case request.method === 'GET' && url.pathname === '/api/posts': {
+					const postId = url.searchParams.get('id');
+					if (!postId) {
+						throw new ValidationError('Post ID is required');
+					}
+
+					const response = await fetch(`${env.BEEHIIV_API_URL}/posts/${postId}`);
+					if (!response.ok) {
+						throw new Error('Failed to fetch post details');
+					}
+
+					responseData = await response.json();
+					break;
+				}
+
+				case request.method === 'GET' && url.pathname === '/api/posts/stats': {
+					const postId = url.searchParams.get('id');
+					if (!postId) {
+						throw new ValidationError('Post ID is required');
+					}
+
+					responseData = await db.getPostStats(postId);
+					break;
 				}
 
 				default:
-					return new Response('Not Found', { status: 404 });
+					status = 404;
+					responseData = { error: 'Not Found' };
 			}
+
+			return new Response(JSON.stringify(responseData), {
+				status,
+				headers: {
+					...corsHeaders,
+					'Content-Type': 'application/json',
+				},
+			});
 		} catch (error) {
 			console.error('Error:', error);
-			if (error instanceof ValidationError) {
-				return Response.json({ error: error.message }, { status: 400 });
-			}
-			return Response.json({ error: 'Internal Server Error' }, { status: 500 });
+			const status = error instanceof ValidationError ? 400 : 500;
+			const errorMessage = error instanceof ValidationError ? error.message : 'Internal Server Error';
+
+			return new Response(JSON.stringify({ error: errorMessage }), {
+				status,
+				headers: {
+					...corsHeaders,
+					'Content-Type': 'application/json',
+				},
+			});
 		}
 	},
 };

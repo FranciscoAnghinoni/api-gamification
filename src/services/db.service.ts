@@ -1,4 +1,5 @@
-import { User, WebhookData, ValidationError, UserStats, AdminStats } from '../types';
+import { User, WebhookData, ValidationError, UserStats, AdminStats, AdminStatsFilters, PostStats, ReadingHistory } from '../types';
+import { generateAutoLoginToken } from '../utils/auth';
 
 export interface Database {
 	prepare: (query: string) => D1PreparedStatement;
@@ -33,14 +34,49 @@ export class DbService {
 export class DatabaseService {
 	constructor(private db: D1Database) {}
 
-	async getUser(email: string): Promise<User | null> {
-		return await this.db.prepare(`SELECT * FROM users WHERE email = ?`).bind(email).first<User>();
+	async getUserByAutoLoginToken(token: string): Promise<User | null> {
+		return await this.db.prepare('SELECT * FROM users WHERE auto_login_token = ?').bind(token).first<User>();
 	}
 
-	async createUser(email: string, lastReadDate?: string): Promise<D1Result> {
-		return this.db
-			.prepare('INSERT INTO users (email, last_read_date) VALUES (?, ?)')
-			.bind(email, lastReadDate || null)
+	async getOrCreateUser(email: string): Promise<User> {
+		let user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
+
+		if (!user) {
+			const token = generateAutoLoginToken();
+			await this.db
+				.prepare('INSERT INTO users (email, auto_login_token, current_streak, highest_streak) VALUES (?, ?, 0, 0)')
+				.bind(email, token)
+				.run();
+			user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
+		}
+
+		return user!;
+	}
+
+	async getLastReadDate(userId: number): Promise<string | null> {
+		const result = await this.db
+			.prepare('SELECT read_date FROM reading_stats WHERE user_id = ? ORDER BY read_date DESC LIMIT 1')
+			.bind(userId)
+			.first<{ read_date: string }>();
+
+		return result?.read_date || null;
+	}
+
+	async updateUserStreak(userId: number, newStreak: number): Promise<void> {
+		await this.db
+			.prepare(
+				`
+				UPDATE users 
+				SET current_streak = ?,
+					highest_streak = CASE 
+						WHEN ? > highest_streak THEN ? 
+						ELSE highest_streak 
+					END,
+					last_read_date = DATE('now')
+				WHERE id = ?
+				`
+			)
+			.bind(newStreak, newStreak, newStreak, userId)
 			.run();
 	}
 
@@ -58,94 +94,25 @@ export class DatabaseService {
 			)
 			.bind(user.id, data.post_id, data.utm_source || null, data.utm_medium || null, data.utm_campaign || null, data.utm_channel || null)
 			.run();
-
-		await this.updateStreak(user.id);
 	}
 
-	private async getOrCreateUser(email: string): Promise<{ id: number }> {
-		const user = await this.db.prepare('SELECT id FROM users WHERE email = ?').bind(email).first<{ id: number }>();
-
-		if (user) return user;
-
-		const result = await this.db.prepare('INSERT INTO users (email) VALUES (?)').bind(email).run();
-
-		return { id: result.meta.last_row_id };
-	}
-
-	private async updateStreak(userId: number): Promise<void> {
-		const lastRead = await this.db
-			.prepare('SELECT read_date FROM reading_stats WHERE user_id = ? ORDER BY read_date DESC LIMIT 1')
-			.bind(userId)
-			.first<{ read_date: string }>();
-
-		if (!lastRead) {
-			await this.updateUserStreak(userId, 1);
-			return;
-		}
-
-		const today = new Date();
-		if (today.getDay() === 0) return; // Skip Sundays
-
-		const lastReadDate = new Date(lastRead.read_date);
-		const yesterday = new Date(today);
-		yesterday.setDate(today.getDate() - 1);
-
-		// If yesterday was Sunday, check Friday
-		if (yesterday.getDay() === 0) {
-			yesterday.setDate(yesterday.getDate() - 2);
-		}
-
-		const user = await this.db.prepare('SELECT current_streak FROM users WHERE id = ?').bind(userId).first<{ current_streak: number }>();
-
-		let newStreak = 1;
-		if (lastReadDate.toISOString().split('T')[0] === yesterday.toISOString().split('T')[0]) {
-			newStreak = (user?.current_streak || 0) + 1;
-		}
-
-		await this.updateUserStreak(userId, newStreak);
-	}
-
-	private async updateUserStreak(userId: number, newStreak: number): Promise<void> {
-		await this.db
-			.prepare(
-				`
-				UPDATE users 
-				SET current_streak = ?, 
-					highest_streak = CASE 
-						WHEN ? > highest_streak THEN ? 
-						ELSE highest_streak 
-					END 
-				WHERE id = ?
-			`
-			)
-			.bind(newStreak, newStreak, newStreak, userId)
-			.run();
-	}
-
-	async recordReading(userId: number, pagesRead: number, readDate: string): Promise<D1Result> {
-		return this.db
-			.prepare('INSERT INTO reading_stats (user_id, pages_read, read_date) VALUES (?, ?, ?)')
-			.bind(userId, pagesRead, readDate)
-			.run();
-	}
-
-	async getUserStats(userId: number): Promise<UserStats> {
-		const stats = await this.db
-			.prepare(
-				`
+	async getUserStats(userId?: number, email?: string): Promise<UserStats> {
+		const query = `
 			SELECT 
 				u.current_streak,
 				u.highest_streak,
 				COUNT(r.id) as total_reads,
-				MAX(r.read_date) as last_read_date,
+				u.last_read_date,
 				GROUP_CONCAT(DISTINCT r.utm_source) as sources
 			FROM users u
 			LEFT JOIN reading_stats r ON u.id = r.user_id
-			WHERE u.id = ?
+			WHERE ${userId ? 'u.id = ?' : 'u.email = ?'}
 			GROUP BY u.id
-		`
-			)
-			.bind(userId)
+		`;
+
+		const stats = await this.db
+			.prepare(query)
+			.bind(userId || email)
 			.first<UserStats>();
 
 		return (
@@ -155,11 +122,114 @@ export class DatabaseService {
 				total_reads: 0,
 				last_read_date: null,
 				sources: [],
+				history: [],
 			}
 		);
 	}
 
-	async getAdminStats(): Promise<AdminStats> {
+	async getUserReadingHistory(userId?: number, email?: string): Promise<ReadingHistory[]> {
+		const query = `
+			SELECT 
+				r.read_date as date,
+				r.post_id,
+				p.title as post_title
+			FROM reading_stats r
+			LEFT JOIN posts p ON r.post_id = p.id
+			JOIN users u ON r.user_id = u.id
+			WHERE ${userId ? 'u.id = ?' : 'u.email = ?'}
+			ORDER BY r.read_date DESC
+		`;
+
+		const result = await this.db
+			.prepare(query)
+			.bind(userId || email)
+			.all();
+		const history = result?.results as Array<{
+			date: string;
+			post_id: string;
+			post_title?: string;
+		}>;
+		return history || [];
+	}
+
+	async getPostStats(postId: string): Promise<PostStats> {
+		const basicStats = await this.db
+			.prepare(
+				`
+				SELECT 
+					COUNT(*) as total_reads,
+					COUNT(DISTINCT user_id) as unique_readers
+				FROM reading_stats
+				WHERE post_id = ?
+			`
+			)
+			.bind(postId)
+			.first<{ total_reads: number; unique_readers: number }>();
+
+		const utmBreakdown = await this.db
+			.prepare(
+				`
+				SELECT 
+					utm_source, utm_medium, utm_campaign, utm_channel,
+					COUNT(*) as count
+				FROM reading_stats
+				WHERE post_id = ?
+				GROUP BY utm_source, utm_medium, utm_campaign, utm_channel
+			`
+			)
+			.bind(postId)
+			.all();
+
+		const breakdown: PostStats['utm_breakdown'] = {
+			source: {},
+			medium: {},
+			campaign: {},
+			channel: {},
+		};
+
+		(
+			utmBreakdown.results as Array<{
+				utm_source?: string;
+				utm_medium?: string;
+				utm_campaign?: string;
+				utm_channel?: string;
+				count: number;
+			}>
+		).forEach((row) => {
+			if (row.utm_source) breakdown.source[row.utm_source] = row.count;
+			if (row.utm_medium) breakdown.medium[row.utm_medium] = row.count;
+			if (row.utm_campaign) breakdown.campaign[row.utm_campaign] = row.count;
+			if (row.utm_channel) breakdown.channel[row.utm_channel] = row.count;
+		});
+
+		return {
+			total_reads: basicStats?.total_reads || 0,
+			unique_readers: basicStats?.unique_readers || 0,
+			utm_breakdown: breakdown,
+		};
+	}
+
+	async getAdminStats(filters?: AdminStatsFilters): Promise<AdminStats> {
+		let whereClause = '1=1';
+		const params: any[] = [];
+
+		if (filters?.startDate) {
+			whereClause += ' AND r.read_date >= ?';
+			params.push(filters.startDate);
+		}
+		if (filters?.endDate) {
+			whereClause += ' AND r.read_date <= ?';
+			params.push(filters.endDate);
+		}
+		if (filters?.postId) {
+			whereClause += ' AND r.post_id = ?';
+			params.push(filters.postId);
+		}
+		if (filters?.minStreak) {
+			whereClause += ' AND u.current_streak >= ?';
+			params.push(filters.minStreak);
+		}
+
 		const basicStats = await this.db
 			.prepare(
 				`
@@ -170,19 +240,11 @@ export class DatabaseService {
 					COUNT(r.id) as total_reads
 				FROM users u
 				LEFT JOIN reading_stats r ON u.id = r.user_id
-				`
+				WHERE ${whereClause}
+			`
 			)
-			.first<Omit<AdminStats, 'top_readers'>>();
-
-		if (!basicStats) {
-			return {
-				total_users: 0,
-				avg_streak: 0,
-				max_streak: 0,
-				total_reads: 0,
-				top_readers: [],
-			};
-		}
+			.bind(...params)
+			.first<Omit<AdminStats, 'top_readers' | 'engagement_over_time'>>();
 
 		const topReaders = await this.db
 			.prepare(
@@ -193,16 +255,37 @@ export class DatabaseService {
 					COUNT(r.id) as reads
 				FROM users u
 				LEFT JOIN reading_stats r ON u.id = r.user_id
+				WHERE ${whereClause}
 				GROUP BY u.id
 				ORDER BY reads DESC, streak DESC
 				LIMIT 10
-				`
+			`
 			)
+			.bind(...params)
+			.all();
+
+		const engagementOverTime = await this.db
+			.prepare(
+				`
+				SELECT 
+					DATE(r.read_date) as date,
+					COUNT(*) as reads,
+					COUNT(DISTINCT u.id) as unique_readers
+				FROM reading_stats r
+				JOIN users u ON r.user_id = u.id
+				WHERE ${whereClause}
+				GROUP BY DATE(r.read_date)
+				ORDER BY date DESC
+				LIMIT 30
+			`
+			)
+			.bind(...params)
 			.all();
 
 		return {
-			...basicStats,
+			...basicStats!,
 			top_readers: topReaders.results as AdminStats['top_readers'],
+			engagement_over_time: engagementOverTime.results as AdminStats['engagement_over_time'],
 		};
 	}
 }

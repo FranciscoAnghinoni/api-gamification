@@ -12,12 +12,44 @@ export interface WebhookData {
 	utm_channel?: string;
 }
 
+export interface User {
+	id: number;
+	email: string;
+	current_streak: number;
+	highest_streak: number;
+	last_read_date: string | null;
+	auto_login_token?: string;
+}
+
+export interface LoginResponse {
+	success: boolean;
+	user: User;
+}
+
+export interface ReadingHistory {
+	date: string;
+	post_id: string;
+	post_title?: string;
+}
+
 export interface UserStats {
 	current_streak: number;
 	highest_streak: number;
 	total_reads: number;
 	last_read_date: string | null;
 	sources: string[];
+	history: ReadingHistory[];
+}
+
+export interface PostStats {
+	total_reads: number;
+	unique_readers: number;
+	utm_breakdown: {
+		source: { [key: string]: number };
+		medium: { [key: string]: number };
+		campaign: { [key: string]: number };
+		channel: { [key: string]: number };
+	};
 }
 
 export interface AdminStats {
@@ -30,14 +62,18 @@ export interface AdminStats {
 		streak: number;
 		reads: number;
 	}[];
+	engagement_over_time: {
+		date: string;
+		reads: number;
+		unique_readers: number;
+	}[];
 }
 
-export interface User {
-	email: string;
-	current_streak: number;
-	highest_streak: number;
-	last_read_date: string;
-	created_at: string;
+export interface AdminStatsFilters {
+	startDate?: string;
+	endDate?: string;
+	postId?: string;
+	minStreak?: number;
 }
 
 export class ValidationError extends Error {

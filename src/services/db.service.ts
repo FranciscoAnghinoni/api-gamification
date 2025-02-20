@@ -45,7 +45,11 @@ export class DatabaseService {
 		let user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
 
 		if (!user) {
-			await this.db.prepare('INSERT INTO users (email, current_streak, highest_streak) VALUES (?, 1, 1)').bind(email).run();
+			// Create new user with NULL password_hash
+			await this.db
+				.prepare('INSERT INTO users (email, current_streak, highest_streak, password_hash) VALUES (?, 1, 1, NULL)')
+				.bind(email)
+				.run();
 			user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
 		}
 
@@ -117,25 +121,39 @@ export class DatabaseService {
 		await this.db
 			.prepare(
 				`
-			INSERT INTO reading_stats (
-				user_id, post_id, utm_source, utm_medium, 
-				utm_campaign, utm_channel, read_date
-			) VALUES (?, ?, ?, ?, ?, ?, DATE('now'))
-		`
+				INSERT INTO reading_stats (
+					user_id, post_id, utm_source, utm_medium, 
+					utm_campaign, utm_channel, read_date
+				) VALUES (?, ?, ?, ?, ?, ?, DATE('now'))
+			`
 			)
 			.bind(user.id, data.post_id, data.utm_source || null, data.utm_medium || null, data.utm_campaign || null, data.utm_channel || null)
 			.run();
 
-		// Get the last unique post read
-		const lastRead = await this.getLastUniquePostRead(user.id);
+		// Get the last read date
+		const lastRead = await this.getLastReadDate(user.id);
+		const today = new Date();
+		const todayStr = today.toISOString().split('T')[0];
+
 		let newStreak = 1; // Default to 1 for first read
 
-		if (lastRead && lastRead.post_id !== data.post_id) {
-			// If there was a previous read and it's not the same post
-			newStreak = user.current_streak + 1;
-		} else if (lastRead && lastRead.post_id === data.post_id) {
-			// If it's the same post (shouldn't happen due to early return, but just in case)
-			newStreak = user.current_streak;
+		if (lastRead) {
+			const lastReadDate = new Date(lastRead);
+			const yesterday = new Date(today);
+			yesterday.setDate(today.getDate() - 1);
+
+			// Format dates to YYYY-MM-DD for comparison
+			const lastReadFormatted = lastReadDate.toISOString().split('T')[0];
+			const yesterdayFormatted = yesterday.toISOString().split('T')[0];
+
+			if (lastReadFormatted === yesterdayFormatted) {
+				// Read yesterday, increment streak
+				newStreak = user.current_streak + 1;
+			} else if (lastReadFormatted === todayStr) {
+				// Already read today, maintain current streak
+				newStreak = user.current_streak;
+			}
+			// Otherwise, it's a gap in reading, start new streak at 1
 		}
 
 		// Update the user's streak

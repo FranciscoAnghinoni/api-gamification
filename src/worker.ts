@@ -165,31 +165,33 @@ export default {
 						throw new ValidationError('Email and password are required');
 					}
 
-					// Check if user already exists
-					const existingUser = await db.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+					// Check if user exists from webhook
+					const existingUser = await db.prepare('SELECT id, password_hash FROM users WHERE email = ?').bind(email).first();
 
-					if (existingUser) {
-						throw new ValidationError('User already exists');
+					if (!existingUser) {
+						throw new ValidationError('You need to subscribe to the newsletter before registering');
+					}
+
+					// Check if user already has a password (already registered)
+					const typedUser = existingUser as { id: number; password_hash: string | null };
+					if (typedUser.password_hash) {
+						throw new ValidationError('User already registered. Please login instead');
 					}
 
 					const passwordHash = await hashPassword(password);
 					const timestamp = new Date().toISOString();
 
-					const result = await db
-						.prepare('INSERT INTO users (email, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?) RETURNING id')
-						.bind(email, passwordHash, timestamp, timestamp)
-						.first();
+					// Update existing user with password
+					await db
+						.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+						.bind(passwordHash, timestamp, typedUser.id)
+						.run();
 
-					if (!result) {
-						throw new Error('Failed to create user');
-					}
-
-					const userId = (result as { id: number }).id;
-					const token = await generateToken(userId, email);
+					const token = await generateToken(typedUser.id, email);
 					responseData = {
 						token,
 						user: {
-							id: userId,
+							id: typedUser.id,
 							email,
 						},
 					};

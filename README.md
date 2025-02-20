@@ -34,7 +34,6 @@ A Cloudflare Workers API for gamifying newsletter reading habits with streak tra
 
 ### 🔒 Security
 
-- Rate limiting (100 requests/minute/IP)
 - Input validation
 - Error handling
 - CORS configuration

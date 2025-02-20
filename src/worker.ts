@@ -1,5 +1,4 @@
 import { DatabaseService } from './services/db.service';
-import { RateLimitService } from './services/rate-limit.service';
 import { StreakService } from './services/streak.service';
 import { Env, ValidationError, RegisterRequest, LoginRequest, ChangePasswordRequest, AuthResponse } from './types';
 
@@ -59,7 +58,6 @@ export default {
 
 		const db = new DatabaseService(env.DB);
 		const streakService = new StreakService(db);
-		const rateLimiter = new RateLimitService(env.DB);
 		const url = new URL(request.url);
 		const ip = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 

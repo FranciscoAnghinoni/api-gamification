@@ -354,14 +354,7 @@ export class DatabaseService {
 	}
 }
 
-export async function rateLimit(request: Request, env: Env): Promise<boolean> {
-	const ip = request.headers.get('cf-connecting-ip');
-	const key = `ratelimit:${ip}`;
 
-	// Implementation would depend on your chosen rate limiting solution
-	// Could use Workers KV or other storage mechanism
-	return true;
-}
 
 export function errorHandler(error: Error): Response {
 	console.error('Error:', error);

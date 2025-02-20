@@ -1,7 +1,38 @@
 import { DatabaseService } from './services/db.service';
 import { RateLimitService } from './services/rate-limit.service';
 import { StreakService } from './services/streak.service';
-import { Env, ValidationError } from './types';
+import { Env, ValidationError, RegisterRequest, LoginRequest, ChangePasswordRequest, AuthResponse } from './types';
+
+// Utility functions for authentication
+async function hashPassword(password: string): Promise<string> {
+	const encoder = new TextEncoder();
+	const data = encoder.encode(password);
+	const hash = await crypto.subtle.digest('SHA-256', data);
+	return btoa(String.fromCharCode(...new Uint8Array(hash)));
+}
+
+async function generateToken(userId: number, email: string): Promise<string> {
+	// In a real application, you'd want to use a proper JWT library
+	// For now, we'll create a simple encoded token
+	const payload = {
+		userId,
+		email,
+		exp: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+	};
+	return btoa(JSON.stringify(payload));
+}
+
+async function verifyToken(token: string): Promise<{ userId: number; email: string } | null> {
+	try {
+		const payload = JSON.parse(atob(token));
+		if (payload.exp < Date.now()) {
+			return null;
+		}
+		return { userId: payload.userId, email: payload.email };
+	} catch {
+		return null;
+	}
+}
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -33,17 +64,19 @@ export default {
 		const ip = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 
 		try {
-		
 			let responseData;
 			let status = 200;
 
 			switch (true) {
 				case request.method === 'GET' && url.pathname === '/': {
-					const email = url.searchParams.get('email');
-					const postId = url.searchParams.get('id');
+					const email = url.searchParams.get('email') ?? undefined;
+					const postId = url.searchParams.get('id') ?? undefined;
+					const utmSource = url.searchParams.get('utm_source') ?? undefined;
+					const utmMedium = url.searchParams.get('utm_medium') ?? undefined;
+					const utmCampaign = url.searchParams.get('utm_campaign') ?? undefined;
+					const utmChannel = url.searchParams.get('utm_channel') ?? undefined;
 
-
-					if (!email?.trim() || !postId?.trim()) {
+					if (!email || !postId) {
 						throw new ValidationError('Email and id are required');
 					}
 
@@ -51,10 +84,10 @@ export default {
 						await db.recordRead({
 							email,
 							post_id: postId,
-							utm_source: url.searchParams.get('utm_source') || undefined,
-							utm_medium: url.searchParams.get('utm_medium') || undefined,
-							utm_campaign: url.searchParams.get('utm_campaign') || undefined,
-							utm_channel: url.searchParams.get('utm_channel') || undefined,
+							utm_source: utmSource,
+							utm_medium: utmMedium,
+							utm_campaign: utmCampaign,
+							utm_channel: utmChannel,
 						});
 
 						// Update streak after recording read
@@ -118,6 +151,128 @@ export default {
 					}
 
 					responseData = await db.getPostStats(postId);
+					break;
+				}
+
+				case request.method === 'POST' && url.pathname === '/api/auth/register': {
+					if (!request.body) {
+						throw new ValidationError('Request body is required');
+					}
+
+					const { email, password }: RegisterRequest = await request.json();
+
+					if (!email?.trim() || !password?.trim()) {
+						throw new ValidationError('Email and password are required');
+					}
+
+					// Check if user already exists
+					const existingUser = await db.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+
+					if (existingUser) {
+						throw new ValidationError('User already exists');
+					}
+
+					const passwordHash = await hashPassword(password);
+					const timestamp = new Date().toISOString();
+
+					const result = await db
+						.prepare('INSERT INTO users (email, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?) RETURNING id')
+						.bind(email, passwordHash, timestamp, timestamp)
+						.first();
+
+					if (!result) {
+						throw new Error('Failed to create user');
+					}
+
+					const userId = (result as { id: number }).id;
+					const token = await generateToken(userId, email);
+					responseData = {
+						token,
+						user: {
+							id: userId,
+							email,
+						},
+					};
+					break;
+				}
+
+				case request.method === 'POST' && url.pathname === '/api/auth/login': {
+					if (!request.body) {
+						throw new ValidationError('Request body is required');
+					}
+
+					const { email, password }: LoginRequest = await request.json();
+
+					if (!email?.trim() || !password?.trim()) {
+						throw new ValidationError('Email and password are required');
+					}
+
+					const user = await db.prepare('SELECT id, email, password_hash FROM users WHERE email = ?').bind(email).first();
+
+					if (!user) {
+						throw new ValidationError('Invalid credentials');
+					}
+
+					const typedUser = user as { id: number; email: string; password_hash: string };
+					const passwordHash = await hashPassword(password);
+					if (passwordHash !== typedUser.password_hash) {
+						throw new ValidationError('Invalid credentials');
+					}
+
+					const token = await generateToken(typedUser.id, typedUser.email);
+					responseData = {
+						token,
+						user: {
+							id: typedUser.id,
+							email: typedUser.email,
+						},
+					};
+					break;
+				}
+
+				case request.method === 'POST' && url.pathname === '/api/auth/change-password': {
+					const authHeader = request.headers.get('Authorization');
+					if (!authHeader?.startsWith('Bearer ')) {
+						throw new ValidationError('Authentication required');
+					}
+
+					const token = authHeader.slice(7);
+					const userData = await verifyToken(token);
+					if (!userData) {
+						throw new ValidationError('Invalid or expired token');
+					}
+
+					if (!request.body) {
+						throw new ValidationError('Request body is required');
+					}
+
+					const { currentPassword, newPassword }: ChangePasswordRequest = await request.json();
+
+					if (!currentPassword?.trim() || !newPassword?.trim()) {
+						throw new ValidationError('Current password and new password are required');
+					}
+
+					const user = await db.prepare('SELECT id, password_hash FROM users WHERE id = ?').bind(userData.userId).first();
+
+					if (!user) {
+						throw new ValidationError('User not found');
+					}
+
+					const typedUser = user as { id: number; password_hash: string };
+					const currentPasswordHash = await hashPassword(currentPassword);
+					if (currentPasswordHash !== typedUser.password_hash) {
+						throw new ValidationError('Current password is incorrect');
+					}
+
+					const newPasswordHash = await hashPassword(newPassword);
+					const timestamp = new Date().toISOString();
+
+					await db
+						.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+						.bind(newPasswordHash, timestamp, userData.userId)
+						.run();
+
+					responseData = { success: true };
 					break;
 				}
 

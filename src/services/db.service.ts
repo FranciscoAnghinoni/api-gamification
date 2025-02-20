@@ -31,7 +31,15 @@ export class DbService {
 }
 
 export class DatabaseService {
-	constructor(private db: D1Database) {}
+	private db: D1Database;
+
+	constructor(db: D1Database) {
+		this.db = db;
+	}
+
+	prepare(query: string) {
+		return this.db.prepare(query);
+	}
 
 	async getOrCreateUser(email: string): Promise<User> {
 		let user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();

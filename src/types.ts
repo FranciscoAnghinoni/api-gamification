@@ -70,6 +70,38 @@ export interface AdminStatsFilters {
 	minStreak?: number;
 }
 
+export interface AuthUser {
+	id: number;
+	email: string;
+	password_hash: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface RegisterRequest {
+	email: string;
+	password: string;
+}
+
+export interface LoginRequest {
+	email: string;
+	password: string;
+}
+
+export interface ChangePasswordRequest {
+	email: string;
+	currentPassword: string;
+	newPassword: string;
+}
+
+export interface AuthResponse {
+	token: string;
+	user: {
+		id: number;
+		email: string;
+	};
+}
+
 export class ValidationError extends Error {
 	constructor(message: string) {
 		super(message);

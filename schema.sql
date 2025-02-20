@@ -7,6 +7,7 @@ CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT,
+    is_admin BOOLEAN DEFAULT 0,
     current_streak INTEGER DEFAULT 0,
     highest_streak INTEGER DEFAULT 0,
     last_read_date TEXT,

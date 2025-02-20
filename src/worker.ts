@@ -207,13 +207,13 @@ export default {
 						throw new ValidationError('Email and password are required');
 					}
 
-					const user = await db.prepare('SELECT id, email, password_hash FROM users WHERE email = ?').bind(email).first();
+					const user = await db.prepare('SELECT id, email, password_hash, is_admin FROM users WHERE email = ?').bind(email).first();
 
 					if (!user) {
 						throw new ValidationError('Invalid credentials');
 					}
 
-					const typedUser = user as { id: number; email: string; password_hash: string };
+					const typedUser = user as { id: number; email: string; password_hash: string; is_admin: boolean };
 					const passwordHash = await hashPassword(password);
 					if (passwordHash !== typedUser.password_hash) {
 						throw new ValidationError('Invalid credentials');
@@ -225,6 +225,7 @@ export default {
 						user: {
 							id: typedUser.id,
 							email: typedUser.email,
+							is_admin: typedUser.is_admin,
 						},
 					};
 					break;

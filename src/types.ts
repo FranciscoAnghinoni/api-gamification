@@ -99,6 +99,7 @@ export interface AuthResponse {
 	user: {
 		id: number;
 		email: string;
+		is_admin: boolean;
 	};
 }
 

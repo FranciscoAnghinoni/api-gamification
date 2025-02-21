@@ -99,15 +99,14 @@ export default {
 				}
 
 				case request.method === 'GET' && url.pathname === '/api/stats': {
-					const userId = url.searchParams.get('userId');
-					const email = url.searchParams.get('email');
+					const email = url.searchParams.get('email') ?? undefined;
 
-					if (!userId && !email) {
-						throw new ValidationError('Either userId or email is required');
+					if (!email) {
+						throw new ValidationError('Email is required');
 					}
 
-					const stats = await db.getUserStats(userId ? parseInt(userId, 10) : undefined, email);
-					const history = await db.getUserReadingHistory(userId ? parseInt(userId, 10) : undefined, email);
+					const stats = await db.getUserStats(undefined, email);
+					const history = await db.getUserReadingHistory(undefined, email);
 					responseData = { ...stats, history };
 					break;
 				}

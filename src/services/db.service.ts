@@ -162,16 +162,51 @@ export class DatabaseService {
 
 	async getUserStats(userId?: number, email?: string): Promise<UserStats> {
 		const query = `
+			WITH user_data AS (
+				SELECT 
+					u.id,
+					u.current_streak,
+					u.highest_streak,
+					u.last_read_date,
+					u.created_at,
+					COUNT(r.id) as total_reads,
+					GROUP_CONCAT(DISTINCT r.utm_source) as sources,
+					-- Count days between creation_date and today, excluding Sundays
+					(
+						SELECT COUNT(*)
+						FROM (
+							WITH RECURSIVE dates(date) AS (
+								SELECT date(u.created_at)
+								UNION ALL
+								SELECT date(date, '+1 day')
+								FROM dates
+								WHERE date < date('now')
+							)
+							SELECT date
+							FROM dates
+							WHERE strftime('%w', date) != '0'  -- Exclude Sundays (0 = Sunday)
+						)
+					) as total_possible_newsletters
+				FROM users u
+				LEFT JOIN reading_stats r ON u.id = r.user_id
+				WHERE ${userId ? 'u.id = ?' : 'u.email = ?'}
+				GROUP BY u.id
+			)
 			SELECT 
-				u.current_streak,
-				u.highest_streak,
-				COUNT(r.id) as total_reads,
-				u.last_read_date,
-				GROUP_CONCAT(DISTINCT r.utm_source) as sources
-			FROM users u
-			LEFT JOIN reading_stats r ON u.id = r.user_id
-			WHERE ${userId ? 'u.id = ?' : 'u.email = ?'}
-			GROUP BY u.id
+				COALESCE(current_streak, 0) as current_streak,
+				COALESCE(highest_streak, 0) as highest_streak,
+				COALESCE(total_reads, 0) as total_reads,
+				last_read_date,
+				sources,
+				CASE 
+					WHEN total_possible_newsletters > 0 THEN
+						MIN(
+							ROUND((CAST(total_reads AS FLOAT) / total_possible_newsletters) * 100, 2),
+							100
+						)
+					ELSE 100  -- If created today, and has reads, then 100%
+				END as opening_rate
+			FROM user_data
 		`;
 
 		const stats = await this.db
@@ -186,6 +221,7 @@ export class DatabaseService {
 				total_reads: 0,
 				last_read_date: null,
 				sources: [],
+				opening_rate: 0,
 				history: [],
 			}
 		);
@@ -195,10 +231,8 @@ export class DatabaseService {
 		const query = `
 			SELECT 
 				r.read_date as date,
-				r.post_id,
-				p.title as post_title
+				r.post_id
 			FROM reading_stats r
-			LEFT JOIN posts p ON r.post_id = p.id
 			JOIN users u ON r.user_id = u.id
 			WHERE ${userId ? 'u.id = ?' : 'u.email = ?'}
 			ORDER BY r.read_date DESC
@@ -208,12 +242,7 @@ export class DatabaseService {
 			.prepare(query)
 			.bind(userId || email)
 			.all();
-		const history = result?.results as Array<{
-			date: string;
-			post_id: string;
-			post_title?: string;
-		}>;
-		return history || [];
+		return (result?.results as ReadingHistory[]) || [];
 	}
 
 	async getPostStats(postId: string): Promise<PostStats> {
@@ -353,8 +382,6 @@ export class DatabaseService {
 		};
 	}
 }
-
-
 
 export function errorHandler(error: Error): Response {
 	console.error('Error:', error);

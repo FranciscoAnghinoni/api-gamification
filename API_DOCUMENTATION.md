@@ -49,6 +49,7 @@ Get statistics for a specific user.
 
 ```http
 GET /api/stats?userId={userId}&email={email}
+GET /api/stats?email=user@example.com
 ```
 
 #### Query Parameters
@@ -138,6 +139,7 @@ GET /api/posts?id={postId}
 
 Returns post details from Beehiiv API
 
+
 ### 5. Post Statistics
 
 Get statistics for a specific post.
@@ -155,6 +157,7 @@ GET /api/posts/stats?id={postId}
 #### Response
 
 Returns post-specific statistics
+
 
 ### 6. User Registration
 
@@ -245,49 +248,6 @@ Authorization: Bearer <token>
 }
 ```
 
-## Error Responses
-
-All endpoints may return the following error responses:
-
-### 400 Bad Request
-
-```json
-{
-	"error": "Validation error message"
-}
-```
-
-### 401 Unauthorized
-
-```json
-{
-	"error": "Authentication required"
-}
-```
-
-### 404 Not Found
-
-```json
-{
-	"error": "Resource not found"
-}
-```
-
-### 429 Too Many Requests
-
-```json
-{
-	"error": "Rate limit exceeded"
-}
-```
-
-### 500 Internal Server Error
-
-```json
-{
-	"error": "Internal server error"
-}
-```
 
 ## CORS
 

@@ -32,6 +32,7 @@ export interface UserStats {
 	total_reads: number;
 	last_read_date: string | null;
 	sources: string[];
+	opening_rate: number;
 	history: ReadingHistory[];
 }
 

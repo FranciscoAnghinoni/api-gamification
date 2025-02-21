@@ -303,83 +303,153 @@ export class DatabaseService {
 	}
 
 	async getAdminStats(filters?: AdminStatsFilters): Promise<AdminStats> {
-		let whereClause = '1=1';
+		let dateFilter = '1=1';
 		const params: any[] = [];
 
 		if (filters?.startDate) {
-			whereClause += ' AND r.read_date >= ?';
+			dateFilter += ' AND r.read_date >= ?';
 			params.push(filters.startDate);
 		}
 		if (filters?.endDate) {
-			whereClause += ' AND r.read_date <= ?';
+			dateFilter += ' AND r.read_date <= ?';
 			params.push(filters.endDate);
 		}
-		if (filters?.postId) {
-			whereClause += ' AND r.post_id = ?';
-			params.push(filters.postId);
-		}
-		if (filters?.minStreak) {
-			whereClause += ' AND u.current_streak >= ?';
-			params.push(filters.minStreak);
-		}
 
-		const basicStats = await this.db
-			.prepare(
-				`
+		const query = `
+			WITH user_stats AS (
 				SELECT 
-					COUNT(DISTINCT u.id) as total_users,
-					COALESCE(AVG(u.current_streak), 0) as avg_streak,
-					COALESCE(MAX(u.highest_streak), 0) as max_streak,
-					COUNT(r.id) as total_reads
+					u.id,
+					u.current_streak,
+					COUNT(r.id) as total_reads,
+					(
+						SELECT COUNT(*)
+						FROM (
+							WITH RECURSIVE dates(date) AS (
+								SELECT date(u.created_at)
+								UNION ALL
+								SELECT date(date, '+1 day')
+								FROM dates
+								WHERE date < date('now')
+							)
+							SELECT date
+							FROM dates
+							WHERE strftime('%w', date) != '0'  -- Exclude Sundays
+						)
+					) as total_possible_newsletters,
+					CASE 
+						WHEN COUNT(r.id) > 0 THEN 1
+						ELSE 0
+					END as is_active
 				FROM users u
-				LEFT JOIN reading_stats r ON u.id = r.user_id
-				WHERE ${whereClause}
-			`
-			)
-			.bind(...params)
-			.first<Omit<AdminStats, 'top_readers' | 'engagement_over_time'>>();
-
-		const topReaders = await this.db
-			.prepare(
-				`
-				SELECT 
-					u.email,
-					u.current_streak as streak,
-					COUNT(r.id) as reads
-				FROM users u
-				LEFT JOIN reading_stats r ON u.id = r.user_id
-				WHERE ${whereClause}
+				LEFT JOIN reading_stats r ON u.id = r.user_id AND ${dateFilter}
 				GROUP BY u.id
-				ORDER BY reads DESC, streak DESC
-				LIMIT 10
-			`
-			)
-			.bind(...params)
-			.all();
-
-		const engagementOverTime = await this.db
-			.prepare(
-				`
+			),
+			user_rates AS (
 				SELECT 
-					DATE(r.read_date) as date,
-					COUNT(*) as reads,
-					COUNT(DISTINCT u.id) as unique_readers
-				FROM reading_stats r
-				JOIN users u ON r.user_id = u.id
-				WHERE ${whereClause}
-				GROUP BY DATE(r.read_date)
-				ORDER BY date DESC
-				LIMIT 30
-			`
+					*,
+					CASE 
+						WHEN total_possible_newsletters > 0 THEN
+							MIN(
+								ROUND((CAST(total_reads AS FLOAT) / total_possible_newsletters) * 100, 2),
+								100
+							)
+						ELSE 100
+					END as opening_rate
+				FROM user_stats
 			)
+			SELECT 
+				COUNT(*) as total_users,
+				ROUND(AVG(current_streak), 2) as avg_streak,
+				ROUND(AVG(opening_rate), 2) as avg_opening_rate,
+				SUM(is_active) as active_users
+			FROM user_rates
+			WHERE opening_rate > 0
+		`;
+
+		const result = await this.db
+			.prepare(query)
+			.bind(...params)
+			.first<{
+				total_users: number;
+				avg_streak: number;
+				avg_opening_rate: number;
+				active_users: number;
+			}>();
+
+		return (
+			result || {
+				total_users: 0,
+				avg_streak: 0,
+				avg_opening_rate: 0,
+				active_users_30d: 0,
+			}
+		);
+	}
+
+	async getTopReaders(filters?: AdminStatsFilters): Promise<AdminStats['top_readers']> {
+		let dateFilter = '1=1';
+		const params: any[] = [];
+
+		if (filters?.startDate) {
+			dateFilter += ' AND r.read_date >= ?';
+			params.push(filters.startDate);
+		}
+		if (filters?.endDate) {
+			dateFilter += ' AND r.read_date <= ?';
+			params.push(filters.endDate);
+		}
+
+		const query = `
+			WITH user_stats AS (
+				SELECT 
+					u.id,
+					u.email,
+					u.current_streak,
+					u.last_read_date,
+					COUNT(r.id) as total_reads,
+					(
+						SELECT COUNT(*)
+						FROM (
+							WITH RECURSIVE dates(date) AS (
+								SELECT date(u.created_at)
+								UNION ALL
+								SELECT date(date, '+1 day')
+								FROM dates
+								WHERE date < date('now')
+							)
+							SELECT date
+							FROM dates
+							WHERE strftime('%w', date) != '0'  -- Exclude Sundays
+						)
+					) as total_possible_newsletters
+				FROM users u
+				LEFT JOIN reading_stats r ON u.id = r.user_id AND ${dateFilter}
+				GROUP BY u.id
+			)
+			SELECT 
+				email,
+				current_streak as streak,
+				last_read_date as last_read,
+				CASE 
+					WHEN total_possible_newsletters > 0 THEN
+						MIN(
+							ROUND((CAST(total_reads AS FLOAT) / total_possible_newsletters) * 100, 2),
+							100
+						)
+					ELSE 100
+				END as opening_rate
+			FROM user_stats
+			WHERE total_reads > 0
+			ORDER BY opening_rate DESC, streak DESC
+			LIMIT 10
+		`;
+
+		const result = await this.db
+			.prepare(query)
 			.bind(...params)
 			.all();
 
-		return {
-			...basicStats!,
-			top_readers: topReaders.results as AdminStats['top_readers'],
-			engagement_over_time: engagementOverTime.results as AdminStats['engagement_over_time'],
-		};
+		return (result?.results as AdminStats['top_readers']) || [];
 	}
 }
 

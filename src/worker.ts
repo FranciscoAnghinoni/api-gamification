@@ -111,18 +111,55 @@ export default {
 					break;
 				}
 
-				case request.method === 'GET' && url.pathname === '/api/admin/stats': {
-					const startDate = url.searchParams.get('startDate');
-					const endDate = url.searchParams.get('endDate');
-					const postId = url.searchParams.get('postId');
-					const minStreak = url.searchParams.get('minStreak');
+				case request.method === 'GET' && url.pathname === '/api/stats/admin': {
+					const startDate = url.searchParams.get('startDate') ?? undefined;
+					const endDate = url.searchParams.get('endDate') ?? undefined;
 
-					responseData = await db.getAdminStats({
-						startDate,
-						endDate,
-						postId,
-						minStreak: minStreak ? parseInt(minStreak, 10) : undefined,
-					});
+					// Verificar autenticação e permissão de admin aqui
+					const authHeader = request.headers.get('Authorization');
+					if (!authHeader?.startsWith('Bearer ')) {
+						throw new ValidationError('Authentication required');
+					}
+
+					const token = authHeader.slice(7);
+					const userData = await verifyToken(token);
+					if (!userData) {
+						throw new ValidationError('Invalid or expired token');
+					}
+
+					// Verificar se o usuário é admin
+					const user = await db.prepare('SELECT is_admin FROM users WHERE id = ?').bind(userData.userId).first<{ is_admin: boolean }>();
+					if (!user?.is_admin) {
+						throw new ValidationError('Admin access required');
+					}
+
+					responseData = await db.getAdminStats({ startDate, endDate });
+					break;
+				}
+
+				case request.method === 'GET' && url.pathname === '/api/stats/admin/top-readers': {
+					const startDate = url.searchParams.get('startDate') ?? undefined;
+					const endDate = url.searchParams.get('endDate') ?? undefined;
+
+					// Verificar autenticação e permissão de admin aqui
+					const authHeader = request.headers.get('Authorization');
+					if (!authHeader?.startsWith('Bearer ')) {
+						throw new ValidationError('Authentication required');
+					}
+
+					const token = authHeader.slice(7);
+					const userData = await verifyToken(token);
+					if (!userData) {
+						throw new ValidationError('Invalid or expired token');
+					}
+
+					// Verificar se o usuário é admin
+					const user = await db.prepare('SELECT is_admin FROM users WHERE id = ?').bind(userData.userId).first<{ is_admin: boolean }>();
+					if (!user?.is_admin) {
+						throw new ValidationError('Admin access required');
+					}
+
+					responseData = await db.getTopReaders({ startDate, endDate });
 					break;
 				}
 

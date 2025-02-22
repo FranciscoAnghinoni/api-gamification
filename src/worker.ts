@@ -59,7 +59,6 @@ export default {
 		const db = new DatabaseService(env.DB);
 		const streakService = new StreakService(db);
 		const url = new URL(request.url);
-		const ip = request.headers.get('cf-connecting-ip') || '0.0.0.0';
 
 		try {
 			let responseData;
@@ -75,7 +74,7 @@ export default {
 					const utmChannel = url.searchParams.get('utm_channel') ?? undefined;
 
 					if (!email || !postId) {
-						throw new ValidationError('Email and id are required');
+						throw new ValidationError('Both email and newsletter ID are required to record a read');
 					}
 
 					try {
@@ -93,7 +92,10 @@ export default {
 						responseData = { success: true };
 					} catch (error) {
 						console.error('Error recording read:', error);
-						throw new Error('Failed to record read');
+						if (error instanceof ValidationError) {
+							throw error;
+						}
+						throw new Error('Failed to record newsletter read. Please try again later.');
 					}
 					break;
 				}
@@ -102,7 +104,7 @@ export default {
 					const email = url.searchParams.get('email') ?? undefined;
 
 					if (!email) {
-						throw new ValidationError('Email is required');
+						throw new ValidationError('Email is required to fetch user statistics');
 					}
 
 					const stats = await db.getUserStats(undefined, email);
@@ -115,22 +117,22 @@ export default {
 					const startDate = url.searchParams.get('startDate') ?? undefined;
 					const endDate = url.searchParams.get('endDate') ?? undefined;
 
-					// Verificar autenticação e permissão de admin aqui
+					// Verificar autenticação e permissão de admin
 					const authHeader = request.headers.get('Authorization');
 					if (!authHeader?.startsWith('Bearer ')) {
-						throw new ValidationError('Authentication required');
+						throw new ValidationError('Authentication token is required for admin access');
 					}
 
 					const token = authHeader.slice(7);
 					const userData = await verifyToken(token);
 					if (!userData) {
-						throw new ValidationError('Invalid or expired token');
+						throw new ValidationError('Invalid or expired authentication token');
 					}
 
 					// Verificar se o usuário é admin
 					const user = await db.prepare('SELECT is_admin FROM users WHERE id = ?').bind(userData.userId).first<{ is_admin: boolean }>();
 					if (!user?.is_admin) {
-						throw new ValidationError('Admin access required');
+						throw new ValidationError('Admin privileges are required to access this resource');
 					}
 
 					responseData = await db.getAdminStats({ startDate, endDate });
@@ -141,22 +143,22 @@ export default {
 					const startDate = url.searchParams.get('startDate') ?? undefined;
 					const endDate = url.searchParams.get('endDate') ?? undefined;
 
-					// Verificar autenticação e permissão de admin aqui
+					// Verificar autenticação e permissão de admin
 					const authHeader = request.headers.get('Authorization');
 					if (!authHeader?.startsWith('Bearer ')) {
-						throw new ValidationError('Authentication required');
+						throw new ValidationError('Authentication token is required for admin access');
 					}
 
 					const token = authHeader.slice(7);
 					const userData = await verifyToken(token);
 					if (!userData) {
-						throw new ValidationError('Invalid or expired token');
+						throw new ValidationError('Invalid or expired authentication token');
 					}
 
 					// Verificar se o usuário é admin
 					const user = await db.prepare('SELECT is_admin FROM users WHERE id = ?').bind(userData.userId).first<{ is_admin: boolean }>();
 					if (!user?.is_admin) {
-						throw new ValidationError('Admin access required');
+						throw new ValidationError('Admin privileges are required to access this resource');
 					}
 
 					responseData = await db.getTopReaders({ startDate, endDate });
@@ -171,19 +173,19 @@ export default {
 					// Verificar autenticação e permissão de admin
 					const authHeader = request.headers.get('Authorization');
 					if (!authHeader?.startsWith('Bearer ')) {
-						throw new ValidationError('Authentication required');
+						throw new ValidationError('Authentication token is required for admin access');
 					}
 
 					const token = authHeader.slice(7);
 					const userData = await verifyToken(token);
 					if (!userData) {
-						throw new ValidationError('Invalid or expired token');
+						throw new ValidationError('Invalid or expired authentication token');
 					}
 
 					// Verificar se o usuário é admin
 					const user = await db.prepare('SELECT is_admin FROM users WHERE id = ?').bind(userData.userId).first<{ is_admin: boolean }>();
 					if (!user?.is_admin) {
-						throw new ValidationError('Admin access required');
+						throw new ValidationError('Admin privileges are required to access this resource');
 					}
 
 					responseData = await db.getHistoricalStats({ startDate, endDate, period });
@@ -193,12 +195,12 @@ export default {
 				case request.method === 'GET' && url.pathname === '/api/posts': {
 					const postId = url.searchParams.get('id');
 					if (!postId) {
-						throw new ValidationError('Post ID is required');
+						throw new ValidationError('Newsletter ID is required to fetch post details');
 					}
 
 					const response = await fetch(`${env.BEEHIIV_API_URL}/posts/${postId}`);
 					if (!response.ok) {
-						throw new Error('Failed to fetch post details');
+						throw new Error('Failed to fetch newsletter details from Beehiiv. Please try again later.');
 					}
 
 					responseData = await response.json();
@@ -208,7 +210,7 @@ export default {
 				case request.method === 'GET' && url.pathname === '/api/posts/stats': {
 					const postId = url.searchParams.get('id');
 					if (!postId) {
-						throw new ValidationError('Post ID is required');
+						throw new ValidationError('Newsletter ID is required to fetch post statistics');
 					}
 
 					responseData = await db.getPostStats(postId);
@@ -217,26 +219,26 @@ export default {
 
 				case request.method === 'POST' && url.pathname === '/api/auth/register': {
 					if (!request.body) {
-						throw new ValidationError('Request body is required');
+						throw new ValidationError('Request body is required for registration');
 					}
 
 					const { email, password }: RegisterRequest = await request.json();
 
 					if (!email?.trim() || !password?.trim()) {
-						throw new ValidationError('Email and password are required');
+						throw new ValidationError('Both email and password are required for registration');
 					}
 
 					// Check if user exists from webhook
 					const existingUser = await db.prepare('SELECT id, password_hash FROM users WHERE email = ?').bind(email).first();
 
 					if (!existingUser) {
-						throw new ValidationError('You need to subscribe to the newsletter before registering');
+						throw new ValidationError('You need to subscribe to the newsletter before registering. Please subscribe first.');
 					}
 
 					// Check if user already has a password (already registered)
 					const typedUser = existingUser as { id: number; password_hash: string | null };
 					if (typedUser.password_hash) {
-						throw new ValidationError('User already registered. Please login instead');
+						throw new ValidationError('This email is already registered. Please login instead.');
 					}
 
 					const passwordHash = await hashPassword(password);
@@ -261,25 +263,25 @@ export default {
 
 				case request.method === 'POST' && url.pathname === '/api/auth/login': {
 					if (!request.body) {
-						throw new ValidationError('Request body is required');
+						throw new ValidationError('Request body is required for login');
 					}
 
 					const { email, password }: LoginRequest = await request.json();
 
 					if (!email?.trim() || !password?.trim()) {
-						throw new ValidationError('Email and password are required');
+						throw new ValidationError('Both email and password are required for login');
 					}
 
 					const user = await db.prepare('SELECT id, email, password_hash, is_admin FROM users WHERE email = ?').bind(email).first();
 
 					if (!user) {
-						throw new ValidationError('Invalid credentials');
+						throw new ValidationError('Invalid email or password');
 					}
 
 					const typedUser = user as { id: number; email: string; password_hash: string; is_admin: boolean };
 					const passwordHash = await hashPassword(password);
 					if (passwordHash !== typedUser.password_hash) {
-						throw new ValidationError('Invalid credentials');
+						throw new ValidationError('Invalid email or password');
 					}
 
 					const token = await generateToken(typedUser.id, typedUser.email);
@@ -297,23 +299,23 @@ export default {
 				case request.method === 'POST' && url.pathname === '/api/auth/change-password': {
 					const authHeader = request.headers.get('Authorization');
 					if (!authHeader?.startsWith('Bearer ')) {
-						throw new ValidationError('Authentication required');
+						throw new ValidationError('Authentication token is required to change password');
 					}
 
 					const token = authHeader.slice(7);
 					const userData = await verifyToken(token);
 					if (!userData) {
-						throw new ValidationError('Invalid or expired token');
+						throw new ValidationError('Invalid or expired authentication token');
 					}
 
 					if (!request.body) {
-						throw new ValidationError('Request body is required');
+						throw new ValidationError('Request body is required to change password');
 					}
 
 					const { currentPassword, newPassword }: ChangePasswordRequest = await request.json();
 
 					if (!currentPassword?.trim() || !newPassword?.trim()) {
-						throw new ValidationError('Current password and new password are required');
+						throw new ValidationError('Both current password and new password are required');
 					}
 
 					const user = await db.prepare('SELECT id, password_hash FROM users WHERE id = ?').bind(userData.userId).first();
@@ -342,7 +344,7 @@ export default {
 
 				default:
 					status = 404;
-					responseData = { error: 'Not Found' };
+					responseData = { error: 'Endpoint not found' };
 			}
 
 			return new Response(JSON.stringify(responseData), {
@@ -355,7 +357,12 @@ export default {
 		} catch (error) {
 			console.error('Error:', error);
 			const status = error instanceof ValidationError ? 400 : 500;
-			const errorMessage = error instanceof ValidationError ? error.message : 'Internal Server Error';
+			const errorMessage =
+				error instanceof ValidationError
+					? error.message
+					: error instanceof Error
+					? error.message
+					: 'An unexpected error occurred. Please try again later.';
 
 			return new Response(JSON.stringify({ error: errorMessage }), {
 				status,

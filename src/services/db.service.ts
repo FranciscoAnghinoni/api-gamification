@@ -41,7 +41,17 @@ export class DatabaseService {
 		return this.db.prepare(query);
 	}
 
+	private isValidEmail(email: string): boolean {
+		// Regex para validar email
+		const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+		return emailRegex.test(email);
+	}
+
 	async getOrCreateUser(email: string): Promise<User> {
+		if (!this.isValidEmail(email)) {
+			throw new ValidationError(`Invalid email address: "${email}". Email must be in a valid format (e.g., user@domain.com)`);
+		}
+
 		let user = await this.db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<User>();
 
 		if (!user) {
@@ -109,6 +119,10 @@ export class DatabaseService {
 	}
 
 	async recordRead(data: WebhookData): Promise<void> {
+		if (!this.isValidEmail(data.email)) {
+			throw new ValidationError(`Invalid email address: "${data.email}". Email must be in a valid format (e.g., user@domain.com)`);
+		}
+
 		const user = await this.getOrCreateUser(data.email);
 
 		// Check if user has already read this post
@@ -124,52 +138,52 @@ export class DatabaseService {
 				INSERT INTO reading_stats (
 					user_id, post_id, utm_source, utm_medium, 
 					utm_campaign, utm_channel, read_date
-				) VALUES (?, ?, ?, ?, ?, ?, DATE('now', 'localtime'))
+				) VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))
 			`
 			)
 			.bind(user.id, data.post_id, data.utm_source || null, data.utm_medium || null, data.utm_campaign || null, data.utm_channel || null)
 			.run();
 
-		// Get the last read date before this one
-		const lastRead = await this.db
+		// Get distinct read dates ordered by date
+		const readDates = await this.db
 			.prepare(
-				`SELECT DISTINCT date(read_date, 'localtime') as read_date 
-				FROM reading_stats 
-				WHERE user_id = ? 
-					AND date(read_date, 'localtime') <= date('now', 'localtime')
-				ORDER BY read_date DESC LIMIT 2` // Pegamos os últimos 2 dias de leitura
+				`
+				SELECT DISTINCT date(read_date) as read_date
+				FROM reading_stats
+				WHERE user_id = ?
+				ORDER BY read_date DESC
+				`
 			)
 			.bind(user.id)
 			.all();
 
-		const lastReads = (lastRead?.results || []) as { read_date: string }[];
+		const dates = (readDates?.results || []) as { read_date: string }[];
+		let streak = 0;
 		const today = new Date();
+		today.setHours(today.getHours() - 3); // Ajusta para UTC-3
 		const todayStr = today.toISOString().split('T')[0];
 
-		let newStreak = 1; // Default to 1 for first read
+		// Calcula o streak
+		for (let i = 0; i < dates.length; i++) {
+			const currentDate = new Date(dates[i].read_date);
 
-		if (lastReads.length > 0) {
-			// Se temos leituras anteriores
-			if (lastReads[0].read_date === todayStr) {
-				// Se já leu hoje, mantém o streak atual
-				newStreak = user.current_streak;
-			} else if (lastReads.length > 1) {
-				// Se temos pelo menos 2 dias de leitura
-				const lastReadDate = new Date(lastReads[0].read_date);
-				const prevReadDate = new Date(lastReads[1].read_date);
+			// Se é o primeiro dia ou se é consecutivo ao anterior
+			if (i === 0) {
+				streak = 1;
+			} else {
+				const prevDate = new Date(dates[i - 1].read_date);
+				const diffDays = Math.floor((prevDate.getTime() - currentDate.getTime()) / (1000 * 60 * 60 * 24));
 
-				// Verifica se são dias consecutivos (excluindo domingo)
-				const daysDiff = Math.floor((lastReadDate.getTime() - prevReadDate.getTime()) / (1000 * 60 * 60 * 24));
-				const isConsecutive = daysDiff === 1 || (daysDiff === 2 && prevReadDate.getDay() === 5 && lastReadDate.getDay() === 1);
-
-				if (isConsecutive) {
-					// Se são dias consecutivos, incrementa o streak
-					newStreak = user.current_streak + 1;
+				// Considera consecutivo se for 1 dia de diferença ou se o dia pulado for domingo
+				if (diffDays === 1 || (diffDays === 2 && currentDate.getDay() === 0)) {
+					streak++;
+				} else {
+					break;
 				}
 			}
 		}
 
-		// Update the user's streak
+		// Update user streak
 		await this.db
 			.prepare(
 				`
@@ -179,99 +193,76 @@ export class DatabaseService {
 						WHEN ? > highest_streak THEN ?
 						ELSE highest_streak 
 					END,
-					last_read_date = DATE('now', 'localtime')
+					last_read_date = datetime('now', '-3 hours')
 				WHERE id = ?
 				`
 			)
-			.bind(newStreak, newStreak, newStreak, user.id)
+			.bind(streak, streak, streak, user.id)
 			.run();
 	}
 
 	async getUserStats(userId?: number, email?: string): Promise<UserStats> {
 		const query = `
 			WITH RECURSIVE dates(date) AS (
-				-- Começa com a data atual no timezone do Brasil (UTC-3)
-				SELECT date(datetime('now', '-3 hours'), 'localtime')
+				SELECT date(datetime('now', '-3 hours'))
 				UNION ALL
 				SELECT date(date, '-1 day')
 				FROM dates
-				WHERE date >= date(datetime('now', '-3 hours'), '-90 days', 'localtime')
+				WHERE date >= date(datetime('now', '-3 hours'), '-90 days')
 			),
 			user_base AS (
 				SELECT * FROM users WHERE ${userId ? 'id = ?' : 'email = ?'}
 			),
 			daily_reads AS (
-				-- Pega apenas uma leitura por dia por usuário, considerando timezone BR
-				SELECT DISTINCT 
-					date(datetime(read_date, '-3 hours'), 'localtime') as read_date
+				SELECT DISTINCT date(read_date) as read_date
 				FROM reading_stats r
 				JOIN user_base u ON r.user_id = u.id
 				ORDER BY read_date DESC
 			),
-			streak_days AS (
-				SELECT 
-					d.date,
-					CASE 
-						WHEN EXISTS (
-							SELECT 1 
-							FROM daily_reads 
-							WHERE read_date = d.date
-						) THEN 1
-						ELSE 0
-					END as has_read,
-					CASE 
-						WHEN strftime('%w', d.date) = '0' THEN 1  -- é domingo
-						ELSE 0 
-					END as is_sunday,
-					-- Marca se o dia já acabou no timezone BR
-					CASE
-						WHEN d.date < date(datetime('now', '-3 hours'), 'localtime') THEN 1
-						ELSE 0
-					END as day_ended
-				FROM dates d
-				WHERE d.date <= date(datetime('now', '-3 hours'), 'localtime')
-				ORDER BY d.date DESC
-			),
 			streak_calc AS (
 				SELECT 
-					date,
-					has_read,
-					is_sunday,
-					day_ended,
-					ROW_NUMBER() OVER (ORDER BY date DESC) as day_number,
-					CASE
-						-- Só quebra o streak se:
-						-- 1. Não é domingo E
-						-- 2. Não tem leitura E
-						-- 3. O dia já acabou no timezone BR
-						WHEN NOT has_read AND NOT is_sunday AND day_ended = 1 THEN 1
-						ELSE 0
-					END as breaks_streak
-				FROM streak_days
+					d.date,
+					EXISTS (
+						SELECT 1 
+						FROM daily_reads 
+						WHERE read_date = d.date
+					) as has_read,
+					CASE WHEN strftime('%w', d.date) = '0' THEN 1 ELSE 0 END as is_sunday
+				FROM dates d
+				WHERE d.date <= date(datetime('now', '-3 hours'))
+				ORDER BY d.date DESC
 			),
-			current_streak AS (
-				SELECT COALESCE(
-					(
-						SELECT COUNT(*)
-						FROM streak_calc
-						WHERE day_number <= (
-							-- Pega todos os dias até a primeira quebra de streak
-							SELECT MIN(day_number) - 1
-							FROM streak_calc
-							WHERE breaks_streak = 1
-						)
-						AND (has_read = 1 OR is_sunday = 1)  -- Conta dias com leitura ou domingos
-					),
-					CASE 
-						WHEN EXISTS (
+			streak_count AS (
+				WITH consecutive_reads AS (
+					SELECT 
+						date,
+						has_read,
+						is_sunday,
+						ROW_NUMBER() OVER (ORDER BY date DESC) as rn,
+						(
+							SELECT COUNT(*)
+							FROM streak_calc s2
+							WHERE s2.date > streak_calc.date
+							AND s2.date < date(datetime('now', '-3 hours'))
+							AND s2.has_read = 0
+							AND s2.is_sunday = 0
+						) as gaps_before_today
+					FROM streak_calc
+					WHERE has_read = 1 
+					OR (
+						is_sunday = 1 
+						AND EXISTS (
 							SELECT 1 
-							FROM streak_calc 
-							WHERE day_number = 1 
-							AND has_read = 1
-						) THEN 1  -- Se leu hoje, mínimo é 1
-						ELSE 0    -- Se não leu hoje, é 0
-					END
-				) as streak_count
+							FROM streak_calc s2 
+							WHERE s2.date > streak_calc.date 
+							AND s2.has_read = 1
+							AND s2.date <= date(datetime('now', '-3 hours'))
+						)
+					)
+				)
+				SELECT COUNT(*) as current_streak
+				FROM consecutive_reads
+				WHERE gaps_before_today = 0
 			),
 			user_data AS (
 				SELECT 
@@ -289,14 +280,14 @@ export class DatabaseService {
 								UNION ALL
 								SELECT date(date, '+1 day')
 								FROM dates
-								WHERE date < date(datetime('now', '-3 hours'), 'localtime')
+								WHERE date < date(datetime('now', '-3 hours'))
 							)
 							SELECT date
 							FROM dates
 							WHERE strftime('%w', date) != '0'  -- Exclude Sundays
 						)
 					) as total_possible_newsletters,
-					(SELECT streak_count FROM current_streak) as current_streak
+					COALESCE((SELECT current_streak FROM streak_count), 0) as current_streak
 				FROM user_base u
 				LEFT JOIN reading_stats r ON u.id = r.user_id
 				GROUP BY u.id
@@ -318,8 +309,7 @@ export class DatabaseService {
 						)
 					ELSE 100
 				END as opening_rate
-			FROM user_data
-		`;
+			FROM user_data`;
 
 		const stats = await this.db
 			.prepare(query)
@@ -524,11 +514,21 @@ export class DatabaseService {
 		const params: any[] = [dateRange.startDate, dateRange.endDate];
 
 		const query = `
-			WITH user_stats AS (
+			WITH RECURSIVE dates(date) AS (
+				SELECT date(datetime('now', '-3 hours'))
+				UNION ALL
+				SELECT date(date, '-1 day')
+				FROM dates
+				WHERE date >= date(datetime('now', '-3 hours'), '-90 days')
+			),
+			user_base AS (
+				SELECT * FROM users 
+				WHERE email != 'admin@example.com'
+			),
+			user_reads AS (
 				SELECT 
 					u.id,
 					u.email,
-					u.current_streak,
 					u.last_read_date,
 					COUNT(r.id) as total_reads,
 					(
@@ -539,37 +539,97 @@ export class DatabaseService {
 								UNION ALL
 								SELECT date(date, '+1 day')
 								FROM dates
-								WHERE date < date('now')
+								WHERE date < date(datetime('now', '-3 hours'))
 							)
 							SELECT date
 							FROM dates
 							WHERE strftime('%w', date) != '0'  -- Exclude Sundays
 						)
 					) as total_possible_newsletters
-				FROM users u
+				FROM user_base u
 				LEFT JOIN reading_stats r ON u.id = r.user_id 
 					AND date(r.read_date) >= date(?)
 					AND date(r.read_date) <= date(?)
-				WHERE u.email != 'admin@example.com'
 				GROUP BY u.id
+			),
+			daily_reads AS (
+				SELECT DISTINCT 
+					u.id,
+					date(r.read_date) as read_date
+				FROM user_base u
+				JOIN reading_stats r ON r.user_id = u.id
+				ORDER BY read_date DESC
+			),
+			streak_calc AS (
+				SELECT 
+					u.id,
+					d.date,
+					EXISTS (
+						SELECT 1 
+						FROM daily_reads dr
+						WHERE dr.id = u.id AND dr.read_date = d.date
+					) as has_read,
+					CASE WHEN strftime('%w', d.date) = '0' THEN 1 ELSE 0 END as is_sunday
+				FROM user_base u
+				CROSS JOIN dates d
+				WHERE d.date <= date(datetime('now', '-3 hours'))
+				ORDER BY u.id, d.date DESC
+			),
+			streak_count AS (
+				WITH consecutive_reads AS (
+					SELECT 
+						id,
+						date,
+						has_read,
+						is_sunday,
+						ROW_NUMBER() OVER (PARTITION BY id ORDER BY date DESC) as rn,
+						(
+							SELECT COUNT(*)
+							FROM streak_calc s2
+							WHERE s2.id = streak_calc.id
+							AND s2.date > streak_calc.date
+							AND s2.date < date(datetime('now', '-3 hours'))
+							AND s2.has_read = 0
+							AND s2.is_sunday = 0
+						) as gaps_before_today
+					FROM streak_calc
+					WHERE has_read = 1 
+					OR (
+						is_sunday = 1 
+						AND EXISTS (
+							SELECT 1 
+							FROM streak_calc s2 
+							WHERE s2.id = streak_calc.id
+							AND s2.date > streak_calc.date 
+							AND s2.has_read = 1
+							AND s2.date <= date(datetime('now', '-3 hours'))
+						)
+					)
+				)
+				SELECT 
+					id,
+					COUNT(*) as current_streak
+				FROM consecutive_reads
+				WHERE gaps_before_today = 0
+				GROUP BY id
 			)
 			SELECT 
-				email,
-				current_streak as streak,
-				last_read_date as last_read,
+				ur.email,
+				COALESCE(sc.current_streak, 0) as streak,
+				ur.last_read_date as last_read,
 				CASE 
-					WHEN total_possible_newsletters > 0 THEN
+					WHEN ur.total_possible_newsletters > 0 THEN
 						MIN(
-							ROUND((CAST(total_reads AS FLOAT) / total_possible_newsletters) * 100, 2),
+							ROUND((CAST(ur.total_reads AS FLOAT) / ur.total_possible_newsletters) * 100, 2),
 							100
 						)
 					ELSE 100
 				END as opening_rate
-			FROM user_stats
-			WHERE total_reads > 0
+			FROM user_reads ur
+			LEFT JOIN streak_count sc ON ur.id = sc.id
+			WHERE ur.total_reads > 0
 			ORDER BY opening_rate DESC, streak DESC
-			LIMIT 10
-		`;
+			LIMIT 10`;
 
 		const result = await this.db
 			.prepare(query)
@@ -592,7 +652,6 @@ export class DatabaseService {
 				WHERE date < date(?, 'localtime')
 			),
 			daily_users AS (
-				-- Total de usuários registrados até cada data (excluindo admin)
 				SELECT 
 					d.date,
 					COUNT(DISTINCT u.id) as total_users
@@ -602,29 +661,19 @@ export class DatabaseService {
 				GROUP BY d.date
 			),
 			daily_reads AS (
-				-- Leitores únicos por dia (excluindo admin e domingos)
 				SELECT 
 					d.date,
-					COUNT(DISTINCT r.user_id) as unique_readers,
-					CASE
-						WHEN COUNT(DISTINCT r.user_id) > 0 THEN ROUND(AVG(DISTINCT u.current_streak), 2)
-						ELSE 0
-					END as avg_streak
+					COUNT(DISTINCT r.user_id) as unique_readers
 				FROM dates d
 				LEFT JOIN users u ON u.email != 'admin@example.com'
-				LEFT JOIN (
-					-- Garantir apenas uma leitura por usuário por dia
-					SELECT DISTINCT 
-						user_id,
-						date(read_date, 'localtime') as read_date
-					FROM reading_stats
-				) r ON r.read_date = d.date AND r.user_id = u.id
+				LEFT JOIN reading_stats r ON r.user_id = u.id 
+					AND date(r.read_date, 'localtime') = d.date
 				WHERE strftime('%w', d.date) != '0'  -- Exclui domingos
 				GROUP BY d.date
 			)
 			SELECT 
 				d.date,
-				dr.avg_streak,
+				COALESCE(dr.unique_readers, 0) as avg_streak,
 				CASE 
 					WHEN du.total_users > 0 THEN
 						ROUND((CAST(COALESCE(dr.unique_readers, 0) AS FLOAT) / du.total_users) * 100, 2)
@@ -633,7 +682,8 @@ export class DatabaseService {
 			FROM dates d
 			LEFT JOIN daily_users du ON d.date = du.date
 			LEFT JOIN daily_reads dr ON d.date = dr.date
-			ORDER BY d.date ASC`;
+			ORDER BY d.date ASC
+		`;
 
 		const result = await this.db
 			.prepare(query)

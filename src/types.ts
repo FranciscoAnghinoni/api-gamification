@@ -63,6 +63,7 @@ export interface AdminStats {
 export interface AdminStatsFilters {
 	startDate?: string;
 	endDate?: string;
+	period?: '7d' | '30d' | '90d';
 }
 
 export interface AuthUser {
@@ -103,6 +104,14 @@ export class ValidationError extends Error {
 		super(message);
 		this.name = 'ValidationError';
 	}
+}
+
+export interface HistoricalStats {
+	daily_stats: Array<{
+		date: string;
+		avg_streak: number;
+		opening_rate: number;
+	}>;
 }
 
 /**
@@ -176,5 +185,16 @@ export class ValidationError extends Error {
  *       campaign: { [key: string]: number },
  *       channel: { [key: string]: number }
  *     }
+ *   }
+ *
+ * GET /api/stats/admin/historical
+ * - Gets historical statistics for admin dashboard
+ * - Optional Query Parameters: startDate, endDate (YYYY-MM-DD format)
+ * - Returns: HistoricalStats {
+ *     daily_stats: Array<{
+ *       date: string,        // YYYY-MM-DD format
+ *       avg_streak: number,  // Average streak for that day
+ *       opening_rate: number // Percentage of users who read that day
+ *     }>
  *   }
  */

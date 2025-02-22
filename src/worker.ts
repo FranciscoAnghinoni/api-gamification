@@ -163,6 +163,33 @@ export default {
 					break;
 				}
 
+				case request.method === 'GET' && url.pathname === '/api/stats/admin/historical': {
+					const startDate = url.searchParams.get('startDate') ?? undefined;
+					const endDate = url.searchParams.get('endDate') ?? undefined;
+					const period = url.searchParams.get('period') as '7d' | '30d' | '90d' | undefined;
+
+					// Verificar autenticação e permissão de admin
+					const authHeader = request.headers.get('Authorization');
+					if (!authHeader?.startsWith('Bearer ')) {
+						throw new ValidationError('Authentication required');
+					}
+
+					const token = authHeader.slice(7);
+					const userData = await verifyToken(token);
+					if (!userData) {
+						throw new ValidationError('Invalid or expired token');
+					}
+
+					// Verificar se o usuário é admin
+					const user = await db.prepare('SELECT is_admin FROM users WHERE id = ?').bind(userData.userId).first<{ is_admin: boolean }>();
+					if (!user?.is_admin) {
+						throw new ValidationError('Admin access required');
+					}
+
+					responseData = await db.getHistoricalStats({ startDate, endDate, period });
+					break;
+				}
+
 				case request.method === 'GET' && url.pathname === '/api/posts': {
 					const postId = url.searchParams.get('id');
 					if (!postId) {

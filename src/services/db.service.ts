@@ -405,22 +405,25 @@ export class DatabaseService {
 	}
 
 	private calculateDateRange(filters?: AdminStatsFilters): { startDate: string; endDate: string } {
+		// Create dates in Brazil's timezone (UTC-3)
 		const endDate = new Date();
-		const startDate = new Date();
+		endDate.setHours(endDate.getHours() - 3); // Adjust to Brazil timezone
+
+		const startDate = new Date(endDate);
 
 		// Se não houver filtros ou período especificado, usa 7 dias como padrão
 		const period = filters?.period || '7d';
 
 		switch (period) {
 			case '90d':
-				startDate.setDate(endDate.getDate() - 90);
+				startDate.setDate(endDate.getDate() - 89); // 90 days including today
 				break;
 			case '30d':
-				startDate.setDate(endDate.getDate() - 30);
+				startDate.setDate(endDate.getDate() - 29); // 30 days including today
 				break;
 			case '7d':
 			default:
-				startDate.setDate(endDate.getDate() - 7);
+				startDate.setDate(endDate.getDate() - 6); // 7 days including today
 				break;
 		}
 

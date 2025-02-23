@@ -441,96 +441,9 @@ export class DatabaseService {
 	}
 
 	async getAdminStats(filters: AdminStatsFilters): Promise<AdminStats> {
-		const params: any[] = [filters.startDate, filters.endDate];
-		let additionalWhere = '';
-
-		if (filters.newsletterDate) {
-			additionalWhere += ' AND date(r.read_date, "localtime") = ?';
-			params.push(filters.newsletterDate);
-		}
-
-		if (filters.minStreak) {
-			additionalWhere += ' AND u.current_streak >= ?';
-			params.push(filters.minStreak);
-		}
-
-		const query = `
-			WITH user_stats AS (
-				SELECT 
-					u.id,
-					u.current_streak,
-					COUNT(r.id) as total_reads,
-					(
-						SELECT COUNT(*)
-						FROM (
-							WITH RECURSIVE dates(date) AS (
-								SELECT date(?)
-								UNION ALL
-								SELECT date(date, '+1 day')
-								FROM dates
-								WHERE date < date(?)
-							)
-							SELECT date
-							FROM dates
-							WHERE strftime('%w', date) != '0'  -- Exclude Sundays
-						)
-					) as total_possible_newsletters,
-					CASE 
-						WHEN COUNT(r.id) > 0 THEN 1
-						ELSE 0
-					END as is_active
-				FROM users u
-				LEFT JOIN reading_stats r ON u.id = r.user_id 
-					AND date(r.read_date, "localtime") >= date(?)
-					AND date(r.read_date, "localtime") <= date(?)
-					${additionalWhere}
-				WHERE u.email != 'admin@example.com'
-				GROUP BY u.id
-			),
-			user_rates AS (
-				SELECT 
-					*,
-					CASE 
-						WHEN total_possible_newsletters > 0 THEN
-							MIN(
-								ROUND((CAST(total_reads AS FLOAT) / total_possible_newsletters) * 100, 2),
-								100
-							)
-						ELSE 100
-					END as opening_rate
-				FROM user_stats
-			)
-			SELECT 
-				COUNT(*) as total_users,
-				ROUND(AVG(current_streak), 2) as avg_streak,
-				ROUND(AVG(opening_rate), 2) as avg_opening_rate,
-				SUM(is_active) as active_users
-			FROM user_rates
-			WHERE opening_rate > 0`;
-
-		const result = await this.db
-			.prepare(query)
-			.bind(...params, ...params)
-			.first<{
-				total_users: number;
-				avg_streak: number;
-				avg_opening_rate: number;
-				active_users: number;
-			}>();
-
-		return (
-			result || {
-				total_users: 0,
-				avg_streak: 0,
-				avg_opening_rate: 0,
-				active_users_30d: 0,
-				top_readers: [],
-			}
-		);
-	}
-
-	async getTopReaders(filters: AdminStatsFilters): Promise<AdminStats['top_readers']> {
-		const params: any[] = [filters.startDate, filters.endDate];
+		const { startDate, endDate } = filters;
+		const baseParams = [startDate, endDate];
+		const params: any[] = [...baseParams, ...baseParams, ...baseParams, ...baseParams];
 		let additionalWhere = '';
 
 		if (filters.newsletterDate) {
@@ -560,21 +473,76 @@ export class DatabaseService {
 				GROUP BY date(r.read_date, "localtime")
 				HAVING COUNT(DISTINCT user_id) > 0  -- Garante que houve pelo menos uma leitura neste dia
 			),
-			user_first_reads AS (
-				SELECT 
-					user_id,
-					MIN(date(read_date, 'localtime')) as first_read_date
-				FROM reading_stats
-				GROUP BY user_id
+			daily_reads AS (
+				SELECT DISTINCT 
+					u.id,
+					date(r.read_date, 'localtime') as read_date
+				FROM users u
+				JOIN reading_stats r ON r.user_id = u.id
+				WHERE date(r.read_date, "localtime") >= date(?)
+				AND date(r.read_date, "localtime") <= date(?)
+				ORDER BY read_date DESC
 			),
-			user_reads AS (
+			streak_calc AS (
 				SELECT 
 					u.id,
-					u.email,
-					u.current_streak as streak,
-					u.last_read_date,
+					d.date,
+					EXISTS (
+						SELECT 1 
+						FROM daily_reads dr
+						WHERE dr.id = u.id AND dr.read_date = d.date
+					) as has_read,
+					CASE WHEN strftime('%w', d.date) = '0' THEN 1 ELSE 0 END as is_sunday
+				FROM users u
+				CROSS JOIN dates d
+				WHERE d.date <= date(datetime('now', '-3 hours'))
+				ORDER BY u.id, d.date DESC
+			),
+			streak_count AS (
+				WITH consecutive_reads AS (
+					SELECT 
+						id,
+						date,
+						has_read,
+						is_sunday,
+						ROW_NUMBER() OVER (PARTITION BY id ORDER BY date DESC) as rn,
+						(
+							SELECT COUNT(*)
+							FROM streak_calc s2
+							WHERE s2.id = streak_calc.id
+							AND s2.date > streak_calc.date
+							AND s2.date < date(datetime('now', '-3 hours'))
+							AND s2.has_read = 0
+							AND s2.is_sunday = 0
+						) as gaps_before_today
+					FROM streak_calc
+					WHERE has_read = 1 
+					OR (
+						is_sunday = 1 
+						AND EXISTS (
+							SELECT 1 
+							FROM streak_calc s2 
+							WHERE s2.id = streak_calc.id
+							AND s2.date > streak_calc.date 
+							AND s2.has_read = 1
+							AND s2.date <= date(datetime('now', '-3 hours'))
+						)
+					)
+				)
+				SELECT 
+					id,
+					COUNT(*) as current_streak
+				FROM consecutive_reads
+				WHERE gaps_before_today = 0
+				GROUP BY id
+			),
+			user_stats AS (
+				SELECT 
+					u.id,
+					COALESCE(sc.current_streak, 0) as current_streak,
+					u.created_at,
 					COUNT(DISTINCT CASE 
-						WHEN date(r.read_date, 'localtime') >= ufr.first_read_date 
+						WHEN date(r.read_date, 'localtime') >= date(u.created_at, 'localtime')
 						AND nd.date IS NOT NULL  -- Apenas dias com newsletter
 						THEN date(r.read_date, 'localtime')
 						ELSE NULL 
@@ -582,14 +550,186 @@ export class DatabaseService {
 					(
 						SELECT COUNT(*)
 						FROM newsletter_days nd2
-						WHERE nd2.date >= ufr.first_read_date
+						WHERE nd2.date >= date(u.created_at, 'localtime')
+					) as total_possible_newsletters,
+					CASE 
+						WHEN COUNT(r.id) > 0 THEN 1
+						ELSE 0
+					END as is_active
+				FROM users u
+				JOIN reading_stats r ON u.id = r.user_id  -- Mudado de LEFT JOIN para JOIN para pegar apenas usuários com leituras
+					AND date(r.read_date, "localtime") >= date(?)
+					AND date(r.read_date, "localtime") <= date(?)
+				LEFT JOIN newsletter_days nd ON date(r.read_date, 'localtime') = nd.date
+				LEFT JOIN streak_count sc ON u.id = sc.id
+					${additionalWhere}
+				WHERE u.email != 'admin@example.com'
+				GROUP BY u.id
+			),
+			user_rates AS (
+				SELECT 
+					*,
+					CASE 
+						WHEN total_possible_newsletters > 0 THEN
+							ROUND((CAST(total_reads AS FLOAT) / total_possible_newsletters) * 100, 2)
+						ELSE 0
+					END as opening_rate
+				FROM user_stats
+			),
+			total_stats AS (
+				SELECT 
+					SUM(total_reads) as all_reads,
+					SUM(total_possible_newsletters) as all_possible
+				FROM user_stats
+			)
+			SELECT 
+				COUNT(*) as total_users,
+				ROUND(AVG(current_streak), 2) as avg_streak,
+				ROUND(AVG(opening_rate), 2) as avg_opening_rate,
+				SUM(is_active) as active_users
+			FROM user_rates`;
+
+		const result = await this.db
+			.prepare(query)
+			.bind(...params)
+			.first<{
+				total_users: number;
+				avg_streak: number;
+				avg_opening_rate: number;
+				active_users: number;
+			}>();
+
+		return (
+			result || {
+				total_users: 0,
+				avg_streak: 0,
+				avg_opening_rate: 0,
+				active_users_30d: 0,
+				top_readers: [],
+			}
+		);
+	}
+
+	async getTopReaders(filters: AdminStatsFilters): Promise<AdminStats['top_readers']> {
+		const { startDate, endDate } = filters;
+		const baseParams = [startDate, endDate];
+		const params: any[] = [...baseParams, ...baseParams, ...baseParams, ...baseParams];
+		let additionalWhere = '';
+
+		if (filters.newsletterDate) {
+			additionalWhere += ' AND date(r.read_date, "localtime") = ?';
+			params.push(filters.newsletterDate);
+		}
+
+		if (filters.minStreak) {
+			additionalWhere += ' AND u.current_streak >= ?';
+			params.push(filters.minStreak);
+		}
+
+		const query = `
+			WITH RECURSIVE dates(date) AS (
+				SELECT date(?, 'localtime')
+				UNION ALL
+				SELECT date(date, '+1 day')
+				FROM dates
+				WHERE date < date(?, 'localtime')
+			),
+			newsletter_days AS (
+				SELECT DISTINCT date(read_date, 'localtime') as date
+				FROM reading_stats r
+				WHERE date(r.read_date, "localtime") >= date(?)
+				AND date(r.read_date, "localtime") <= date(?)
+				AND strftime('%w', date(r.read_date, "localtime")) != '0'  -- Exclude Sundays
+				GROUP BY date(r.read_date, "localtime")
+				HAVING COUNT(DISTINCT user_id) > 0  -- Garante que houve pelo menos uma leitura neste dia
+			),
+			daily_reads AS (
+				SELECT DISTINCT 
+					u.id,
+					date(r.read_date, 'localtime') as read_date
+				FROM users u
+				JOIN reading_stats r ON r.user_id = u.id
+				WHERE date(r.read_date, "localtime") >= date(?)
+				AND date(r.read_date, "localtime") <= date(?)
+				ORDER BY read_date DESC
+			),
+			streak_calc AS (
+				SELECT 
+					u.id,
+					d.date,
+					EXISTS (
+						SELECT 1 
+						FROM daily_reads dr
+						WHERE dr.id = u.id AND dr.read_date = d.date
+					) as has_read,
+					CASE WHEN strftime('%w', d.date) = '0' THEN 1 ELSE 0 END as is_sunday
+				FROM users u
+				CROSS JOIN dates d
+				WHERE d.date <= date(datetime('now', '-3 hours'))
+				ORDER BY u.id, d.date DESC
+			),
+			streak_count AS (
+				WITH consecutive_reads AS (
+					SELECT 
+						id,
+						date,
+						has_read,
+						is_sunday,
+						ROW_NUMBER() OVER (PARTITION BY id ORDER BY date DESC) as rn,
+						(
+							SELECT COUNT(*)
+							FROM streak_calc s2
+							WHERE s2.id = streak_calc.id
+							AND s2.date > streak_calc.date
+							AND s2.date < date(datetime('now', '-3 hours'))
+							AND s2.has_read = 0
+							AND s2.is_sunday = 0
+						) as gaps_before_today
+					FROM streak_calc
+					WHERE has_read = 1 
+					OR (
+						is_sunday = 1 
+						AND EXISTS (
+							SELECT 1 
+							FROM streak_calc s2 
+							WHERE s2.id = streak_calc.id
+							AND s2.date > streak_calc.date 
+							AND s2.has_read = 1
+							AND s2.date <= date(datetime('now', '-3 hours'))
+						)
+					)
+				)
+				SELECT 
+					id,
+					COUNT(*) as current_streak
+				FROM consecutive_reads
+				WHERE gaps_before_today = 0
+				GROUP BY id
+			),
+			user_reads AS (
+				SELECT 
+					u.id,
+					u.email,
+					u.created_at,
+					COALESCE(sc.current_streak, 0) as streak,
+					u.last_read_date,
+					COUNT(DISTINCT CASE 
+						WHEN date(r.read_date, 'localtime') >= date(u.created_at, 'localtime')
+						AND nd.date IS NOT NULL  -- Apenas dias com newsletter
+						THEN date(r.read_date, 'localtime')
+						ELSE NULL 
+					END) as total_reads,
+					(
+						SELECT COUNT(*)
+						FROM newsletter_days nd2
+						WHERE nd2.date >= date(u.created_at, 'localtime')
 					) as total_possible_newsletters
 				FROM users u
-				JOIN user_first_reads ufr ON u.id = ufr.user_id
 				LEFT JOIN reading_stats r ON u.id = r.user_id 
 					AND date(r.read_date, "localtime") >= date(?)
 					AND date(r.read_date, "localtime") <= date(?)
 				LEFT JOIN newsletter_days nd ON date(r.read_date, 'localtime') = nd.date
+				LEFT JOIN streak_count sc ON u.id = sc.id
 					${additionalWhere}
 				WHERE u.email != 'admin@example.com'
 				GROUP BY u.id
@@ -610,7 +750,7 @@ export class DatabaseService {
 
 		const result = await this.db
 			.prepare(query)
-			.bind(...params, ...params, ...params)
+			.bind(...params)
 			.all();
 
 		return (result?.results as AdminStats['top_readers']) || [];

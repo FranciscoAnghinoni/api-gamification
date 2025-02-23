@@ -14,11 +14,28 @@ Most endpoints require authentication using a Bearer token. Include the token in
 Authorization: Bearer <your_token>
 ```
 
+## Business Rules
+
+### Opening Rate Calculation
+
+The opening rate is calculated based on the following rules:
+
+1. Only considers newsletters sent after the user's first read
+2. Excludes Sundays from the calculation
+3. Only counts days where newsletters were actually sent
+4. Formula: (newsletters read / newsletters available since first read) \* 100
+
+For example:
+
+- If a user's first read was on Feb 20, and there were newsletters on Feb 20, 21, and 22
+- And the user read on Feb 21 and 22
+- Then their opening rate would be (2/3) \* 100 = 66.67%
+
 ## Endpoints
 
 ### 1. Record Read Event
 
-Records when a user reads a post and updates their streak.
+Records when a user reads a post and updates their streak. Not allowed on Sundays.
 
 ```http
 GET /?email={email}&id={postId}&utm_source={source}&utm_medium={medium}&utm_campaign={campaign}&utm_channel={channel}
@@ -69,6 +86,7 @@ GET /api/stats?email=user@example.com
 	"highest_streak": 10,
 	"total_reads": 25,
 	"last_read_date": "2024-03-20T10:30:00Z",
+	"opening_rate": 83.33,
 	"history": [
 		{
 			"date": "2024-03-20T10:30:00Z",
@@ -84,17 +102,17 @@ GET /api/stats?email=user@example.com
 Get administrative statistics and analytics.
 
 ```http
-GET /api/admin/stats?startDate={startDate}&endDate={endDate}&postId={postId}&minStreak={minStreak}
+GET /api/stats/admin?startDate={startDate}&endDate={endDate}&newsletterDate={newsletterDate}&minStreak={minStreak}
 ```
 
 #### Query Parameters
 
-| Parameter | Type   | Required | Description                           |
-| --------- | ------ | -------- | ------------------------------------- |
-| startDate | string | No       | Start date for filtering (YYYY-MM-DD) |
-| endDate   | string | No       | End date for filtering (YYYY-MM-DD)   |
-| postId    | string | No       | Filter by specific post               |
-| minStreak | number | No       | Filter users by minimum streak        |
+| Parameter      | Type   | Required | Description                                     |
+| -------------- | ------ | -------- | ----------------------------------------------- |
+| startDate      | string | Yes      | Start date for filtering (YYYY-MM-DD)           |
+| endDate        | string | Yes      | End date for filtering (YYYY-MM-DD)             |
+| newsletterDate | string | No       | Filter by specific newsletter date (YYYY-MM-DD) |
+| minStreak      | number | No       | Filter users by minimum streak                  |
 
 #### Response
 
@@ -102,26 +120,73 @@ GET /api/admin/stats?startDate={startDate}&endDate={endDate}&postId={postId}&min
 {
 	"total_users": 100,
 	"avg_streak": 4.5,
-	"max_streak": 15,
-	"total_reads": 500,
-	"top_readers": [
-		{
-			"email": "user@example.com",
-			"streak": 10,
-			"reads": 50
-		}
-	],
-	"engagement_over_time": [
+	"avg_opening_rate": 75.8,
+	"active_users": 80
+}
+```
+
+### 4. Top Readers
+
+Get top 10 readers sorted by opening rate and streak.
+
+```http
+GET /api/stats/admin/top-readers?startDate={startDate}&endDate={endDate}&newsletterDate={newsletterDate}&minStreak={minStreak}
+```
+
+#### Query Parameters
+
+| Parameter      | Type   | Required | Description                                     |
+| -------------- | ------ | -------- | ----------------------------------------------- |
+| startDate      | string | Yes      | Start date for filtering (YYYY-MM-DD)           |
+| endDate        | string | Yes      | End date for filtering (YYYY-MM-DD)             |
+| newsletterDate | string | No       | Filter by specific newsletter date (YYYY-MM-DD) |
+| minStreak      | number | No       | Filter users by minimum streak                  |
+
+#### Response
+
+```json
+[
+	{
+		"email": "user@example.com",
+		"streak": 10,
+		"opening_rate": 100,
+		"last_read": "2024-03-20T10:30:00Z"
+	}
+]
+```
+
+### 5. Historical Statistics
+
+Get historical statistics for the admin dashboard.
+
+```http
+GET /api/stats/admin/historical?startDate={startDate}&endDate={endDate}&newsletterDate={newsletterDate}&minStreak={minStreak}
+```
+
+#### Query Parameters
+
+| Parameter      | Type   | Required | Description                                     |
+| -------------- | ------ | -------- | ----------------------------------------------- |
+| startDate      | string | Yes      | Start date for filtering (YYYY-MM-DD)           |
+| endDate        | string | Yes      | End date for filtering (YYYY-MM-DD)             |
+| newsletterDate | string | No       | Filter by specific newsletter date (YYYY-MM-DD) |
+| minStreak      | number | No       | Filter users by minimum streak                  |
+
+#### Response
+
+```json
+{
+	"daily_stats": [
 		{
 			"date": "2024-03-20",
-			"reads": 25,
-			"unique_readers": 20
+			"avg_streak": 3.5,
+			"opening_rate": 72.5
 		}
 	]
 }
 ```
 
-### 4. Post Details
+### 6. Post Details
 
 Get details about a specific post.
 
@@ -139,8 +204,7 @@ GET /api/posts?id={postId}
 
 Returns post details from Beehiiv API
 
-
-### 5. Post Statistics
+### 7. Post Statistics
 
 Get statistics for a specific post.
 
@@ -158,8 +222,7 @@ GET /api/posts/stats?id={postId}
 
 Returns post-specific statistics
 
-
-### 6. User Registration
+### 8. User Registration
 
 Register a new user account.
 
@@ -188,7 +251,7 @@ POST /api/auth/register
 }
 ```
 
-### 7. User Login
+### 9. User Login
 
 Authenticate a user and get access token.
 
@@ -217,7 +280,7 @@ POST /api/auth/login
 }
 ```
 
-### 8. Change Password
+### 10. Change Password
 
 Change user's password.
 
@@ -247,7 +310,6 @@ Authorization: Bearer <token>
 	"success": true
 }
 ```
-
 
 ## CORS
 

@@ -61,9 +61,10 @@ export interface AdminStats {
 }
 
 export interface AdminStatsFilters {
-	startDate?: string;
-	endDate?: string;
-	period?: '7d' | '30d' | '90d';
+	startDate: string; // Data inicial do período (obrigatório)
+	endDate: string; // Data final do período (obrigatório)
+	newsletterDate?: string; // Data específica da newsletter (opcional)
+	minStreak?: number; // Streak mínimo para filtrar usuários (opcional)
 }
 
 export interface AuthUser {
